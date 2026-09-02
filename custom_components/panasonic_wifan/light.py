@@ -23,6 +23,7 @@ from homeassistant.components.light import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import async_call_later
 
 from .api import nearest_sleep_step
 from .const import (
@@ -40,6 +41,11 @@ from .types import Fan, LightState
 _LOGGER = logging.getLogger(__name__)
 
 SCAN_INTERVAL = timedelta(minutes=5)
+
+# A command is not the last word on what the appliance did with it: entering
+# sleep mode lights the fitting whether or not the command said so. Optimistic
+# state is therefore checked against the device shortly afterwards.
+REFRESH_AFTER_COMMAND = 8  # seconds
 
 # The light's two modes, exposed as effects. Sleep mode dims further than the
 # normal range allows and keeps its own brightness, so it reads as a mode of
@@ -177,9 +183,16 @@ class PanasonicWiFiLight(LightEntity):  # type: ignore[misc]
         """
         return self._store.light(self._fan)
 
-    def _apply(self, state: LightState) -> None:
+    def _apply(self, state: LightState, *, commanded: bool = False) -> None:
         """Mirror a light state onto the entity's attributes."""
-        self._store.set_light(self._fan, state)
+        if commanded:
+            self._store.record_command(self._fan, state)
+        elif not self._store.record_poll(self._fan, state):
+            _LOGGER.debug(
+                "Ignoring a read for %s that may predate the last command",
+                self._fan.name,
+            )
+            return
         self._attr_is_on = state.is_on
         self._attr_brightness = to_ha_brightness(state.active_brightness)
         self._attr_color_temp_kelvin = to_kelvin(state.color_temp)
@@ -248,8 +261,20 @@ class PanasonicWiFiLight(LightEntity):  # type: ignore[misc]
         )
         await self._api.set_light_state(self._fan, state)
 
-        self._apply(state)
+        self._apply(state, commanded=True)
         self.async_write_ha_state()
+        self._verify_soon()
+
+    def _verify_soon(self) -> None:
+        """Read the device back shortly, in case it did something else."""
+        if self.hass is None:
+            return
+
+        async def check(_now) -> None:
+            await self.async_update()
+            self.async_write_ha_state()
+
+        async_call_later(self.hass, REFRESH_AFTER_COMMAND, check)
 
     async def async_update(self) -> None:
         """Fetch the light's state from the cloud."""

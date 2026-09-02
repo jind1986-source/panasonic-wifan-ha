@@ -16,6 +16,7 @@ from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import async_call_later
 
 from .const import DOMAIN, ID_LIGHT_POWER
 from .types import Fan, LightState
@@ -23,6 +24,11 @@ from .types import Fan, LightState
 _LOGGER = logging.getLogger(__name__)
 
 SCAN_INTERVAL = timedelta(minutes=5)
+
+# A command is not the last word on what the appliance did with it: entering
+# sleep mode lights the fitting whether or not the command said so. Optimistic
+# state is therefore checked against the device shortly afterwards.
+REFRESH_AFTER_COMMAND = 8  # seconds
 
 
 async def async_setup_entry(
@@ -97,9 +103,25 @@ class PanasonicWiFiSleepSwitch(SwitchEntity):  # type: ignore[misc]
         _LOGGER.debug("Setting sleep mode on %s to %s", self._fan.name, sleep)
         await self._api.set_light_state(self._fan, state)
 
-        self._store.set_light(self._fan, state)
+        self._store.record_command(self._fan, state)
         self._attr_is_on = sleep
         self.async_write_ha_state()
+        self._verify_soon()
+
+    def _verify_soon(self) -> None:
+        """Read the device back shortly, in case it did something else.
+
+        Entering sleep mode lights the fitting on its own, so what the command
+        asked for is not necessarily where the appliance ends up.
+        """
+        if self.hass is None:
+            return
+
+        async def check(_now) -> None:
+            await self.async_update()
+            self.async_write_ha_state()
+
+        async_call_later(self.hass, REFRESH_AFTER_COMMAND, check)
 
     async def async_update(self) -> None:
         """Fetch the light's mode from the cloud."""
@@ -112,5 +134,10 @@ class PanasonicWiFiSleepSwitch(SwitchEntity):  # type: ignore[misc]
         if state.light is None:
             return
 
-        self._store.set_light(self._fan, state.light)
+        if not self._store.record_poll(self._fan, state.light):
+            _LOGGER.debug(
+                "Ignoring a read for %s that may predate the last command",
+                self._fan.name,
+            )
+            return
         self._attr_is_on = state.light.sleep

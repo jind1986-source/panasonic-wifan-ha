@@ -103,3 +103,25 @@ def test_the_switch_sees_a_change_made_by_the_light():
     assert api.sent[0].sleep is True
     assert api.sent[0].is_on is True
     assert api.sent[0].brightness == 90
+
+
+def test_the_switch_ignores_a_read_that_may_predate_its_command():
+    """A read arriving straight after a command can describe the old state."""
+    store = make_store(LightState(is_on=False, brightness=80, sleep=False))
+    entity, _ = make_switch(None, store=store)
+
+    asyncio.run(entity.async_turn_on())
+    assert entity.is_on is True
+
+    class Api:
+        async def get_state_for_fan(self, fan):
+            return types_.DeviceState(
+                fan=types_.FanState(is_on=True, speed=6, reverse=False, yuragi=True),
+                light=LightState(is_on=False, brightness=80, sleep=False),
+            )
+
+    entity._api = Api()
+    asyncio.run(entity.async_update())
+
+    assert entity.is_on is True
+    assert store.light(FAN).sleep is True

@@ -12,8 +12,14 @@ They therefore read and write one store per config entry instead.
 from __future__ import annotations
 
 from dataclasses import replace
+from time import monotonic
 
 from .types import DeviceState, Fan, FanState, LightState
+
+# An appliance takes a moment to report a change back through the cloud, so a
+# read that arrives immediately after a command can still describe the state
+# before it. Within this window a command is trusted over a read.
+SETTLE = 5  # seconds
 
 
 class StateStore:
@@ -21,6 +27,7 @@ class StateStore:
 
     def __init__(self, states: dict[str, DeviceState] | None = None) -> None:
         self._states: dict[str, DeviceState] = dict(states or {})
+        self._commanded_at: dict[str, float] = {}
 
     def device(self, fan: Fan) -> DeviceState | None:
         return self._states.get(fan.unique_id)
@@ -41,6 +48,25 @@ class StateStore:
         if (device := self.device(fan)) is None:
             raise KeyError(f"No state stored for {fan.name}")
         self._states[fan.unique_id] = replace(device, light=light)
+
+    def record_command(self, fan: Fan, light: LightState) -> None:
+        """Record a light state that was just commanded."""
+        self.set_light(fan, light)
+        self._commanded_at[fan.unique_id] = monotonic()
+
+    def record_poll(self, fan: Fan, light: LightState) -> bool:
+        """Record a light state that was read back, unless it may be stale.
+
+        Returns whether it was recorded. A read arriving within SETTLE of a
+        command is dropped: the appliance may not have reported the change yet,
+        and taking it would undo what was just asked for.
+        """
+        commanded_at = self._commanded_at.get(fan.unique_id)
+        if commanded_at is not None and monotonic() - commanded_at < SETTLE:
+            return False
+
+        self.set_light(fan, light)
+        return True
 
     def __contains__(self, fan: Fan) -> bool:
         return fan.unique_id in self._states

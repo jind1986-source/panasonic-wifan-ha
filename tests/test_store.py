@@ -80,3 +80,32 @@ def test_a_device_state_can_be_replaced_wholesale():
 
 def test_an_empty_store_holds_nothing():
     assert len(StateStore()) == 0
+
+
+def test_a_read_right_after_a_command_is_dropped():
+    """The appliance may not have reported the change yet."""
+    store = make_store()
+    store.record_command(FAN, LightState(is_on=True, brightness=80, sleep=True))
+
+    stale = LightState(is_on=False, brightness=80, sleep=False)
+    assert store.record_poll(FAN, stale) is False
+    assert store.light(FAN).sleep is True
+
+
+def test_a_read_after_the_settle_window_is_taken(monkeypatch):
+    store = make_store()
+    store.record_command(FAN, LightState(is_on=True, brightness=80, sleep=True))
+
+    later = store_module.monotonic() + store_module.SETTLE + 1
+    monkeypatch.setattr(store_module, "monotonic", lambda: later)
+
+    fresh = LightState(is_on=True, brightness=80, sleep=False)
+    assert store.record_poll(FAN, fresh) is True
+    assert store.light(FAN).sleep is False
+
+
+def test_a_read_is_taken_when_nothing_was_commanded():
+    store = make_store()
+    fresh = LightState(is_on=True, brightness=42, sleep=True)
+    assert store.record_poll(FAN, fresh) is True
+    assert store.light(FAN).brightness == 42

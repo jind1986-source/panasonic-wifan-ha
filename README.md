@@ -113,6 +113,12 @@ switch is the only shape that crosses that bridge.
 
 The three entities of one appliance share one view of its state, and a state
 read is cached briefly rather than each polling the cloud for the same answer.
+
+A command is not the last word on what the appliance did with it — entering
+sleep mode lights the fitting whether the command said so or not — so the
+device is read back a few seconds after every command. Conversely a read that
+lands within a few seconds of a command is dropped, since the appliance may not
+have reported the change yet and taking it would undo what was just asked for.
 Sharing matters as much as the caching: a light command carries the whole light
 group, so each one is built from the light's current settings. If the switch
 changed the mode and the light entity did not see it, turning the light on
