@@ -111,9 +111,12 @@ deliberate duplication: HomeKit's lightbulb service has no notion of a light
 effect, so a bridged light cannot carry sleep mode to Apple Home at all. A
 switch is the only shape that crosses that bridge.
 
-The three entities of one appliance refresh on the same schedule, so a state
-read is cached briefly and shared between them rather than each polling the
-cloud for the same answer. A command drops the cached state.
+The three entities of one appliance share one view of its state, and a state
+read is cached briefly rather than each polling the cloud for the same answer.
+Sharing matters as much as the caching: a light command carries the whole light
+group, so each one is built from the light's current settings. If the switch
+changed the mode and the light entity did not see it, turning the light on
+would send the mode back to normal. A command drops the cached state.
 
 Both were found by polling every field on an F-M12GC while operating the light
 in the Panasonic app, with a deliberate fan speed change in the same run as a

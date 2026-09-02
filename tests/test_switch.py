@@ -12,7 +12,7 @@ from _component import load
 
 pytest.importorskip("homeassistant", reason="Home Assistant is not installed")
 
-switch, types_ = load("switch", "types")
+switch, types_, store_module = load("switch", "types", "store")
 LightState = types_.LightState
 
 FAN = types_.Fan(
@@ -33,9 +33,21 @@ class Recorder:
         self.sent.append(state)
 
 
-def make_switch(state):
+def make_store(light_state):
+    return store_module.StateStore(
+        {
+            FAN.unique_id: types_.DeviceState(
+                fan=types_.FanState(is_on=True, speed=6, reverse=False, yuragi=True),
+                light=light_state,
+            )
+        }
+    )
+
+
+def make_switch(state, store=None):
     api = Recorder()
-    entity = switch.PanasonicWiFiSleepSwitch(api, FAN, state)
+    store = store or make_store(state)
+    entity = switch.PanasonicWiFiSleepSwitch(api, FAN, store)
     entity.async_write_ha_state = lambda: None
     return entity, api
 
@@ -76,3 +88,18 @@ def test_the_switch_leaves_every_other_setting_alone():
 def test_the_switch_shares_a_device_with_the_fan():
     entity, _ = make_switch(LightState(is_on=True, brightness=50))
     assert entity.device_info["identifiers"] == {("panasonic_wifan", "abc123")}
+
+
+def test_the_switch_sees_a_change_made_by_the_light():
+    """The light and the switch drive the same fitting, so they share state."""
+    store = make_store(LightState(is_on=False, brightness=10, sleep=False))
+
+    # The light entity turns itself on and brightens.
+    store.set_light(FAN, LightState(is_on=True, brightness=90, sleep=False))
+
+    entity, api = make_switch(None, store=store)
+    asyncio.run(entity.async_turn_on())
+
+    assert api.sent[0].sleep is True
+    assert api.sent[0].is_on is True
+    assert api.sent[0].brightness == 90

@@ -63,6 +63,7 @@ async def async_setup_entry(
     data = hass.data[DOMAIN][entry.entry_id]
     api = data["api"]
     fans = data["fans"]
+    store = data["store"]
     states = data.get("states") or {}
 
     # Any device whose state did not arrive during setup is asked again here
@@ -73,9 +74,14 @@ async def async_setup_entry(
             "Re-reading state for %s", ", ".join(fan.name for fan in unknown)
         )
         try:
-            states = {**states, **await api.get_state_for_fans(unknown)}
+            fetched = await api.get_state_for_fans(unknown)
         except Exception as err:  # noqa: BLE001 - setup must not abort on one device
             _LOGGER.error("Could not read state while looking for lights: %s", err)
+        else:
+            states = {**states, **fetched}
+            for fan in unknown:
+                if (state := fetched.get(fan.unique_id)) is not None:
+                    store.set_device(fan, state)
 
     entities = []
     for fan in fans:
@@ -89,7 +95,7 @@ async def async_setup_entry(
         if state.light is None:
             _LOGGER.debug("%s reports no light", fan.name)
             continue
-        entities.append(PanasonicWiFiLight(api, fan, state.light))
+        entities.append(PanasonicWiFiLight(api, fan, store))
 
     _LOGGER.debug("Adding %s light entity(ies)", len(entities))
     async_add_entities(entities)
@@ -143,13 +149,14 @@ class PanasonicWiFiLight(LightEntity):  # type: ignore[misc]
     _attr_has_entity_name = True
     _attr_name = "Light"
 
-    def __init__(self, api, fan: Fan, state: LightState) -> None:
+    def __init__(self, api, fan: Fan, store) -> None:
         """Initialize the light entity."""
         self._api = api
         self._fan = fan
+        self._store = store
         self._attr_unique_id = f"{fan.unique_id}_light"
 
-        self._apply(state)
+        self._apply(store.light(fan))
 
         # Same identifiers as the fan, so both entities sit on one device.
         self._attr_device_info = {
@@ -160,9 +167,19 @@ class PanasonicWiFiLight(LightEntity):  # type: ignore[misc]
             "serial_number": self._fan.serial_number,
         }
 
+    @property
+    def _current_state(self) -> LightState:
+        """The light's settings, as last seen by any entity of this device.
+
+        Read from the shared store rather than a copy of its own: the sleep
+        switch changes the same light, and a command built from a stale copy
+        would send the mode back.
+        """
+        return self._store.light(self._fan)
+
     def _apply(self, state: LightState) -> None:
         """Mirror a light state onto the entity's attributes."""
-        self._current_state = state
+        self._store.set_light(self._fan, state)
         self._attr_is_on = state.is_on
         self._attr_brightness = to_ha_brightness(state.active_brightness)
         self._attr_color_temp_kelvin = to_kelvin(state.color_temp)

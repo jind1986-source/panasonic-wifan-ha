@@ -37,6 +37,7 @@ async def async_setup_entry(
     data = hass.data[DOMAIN][entry.entry_id]
     api = data["api"]
     fans = data["fans"]
+    store = data["store"]
     states = data.get("states") or {}
 
     entities = []
@@ -44,7 +45,7 @@ async def async_setup_entry(
         state = states.get(fan.unique_id)
         if state is None or state.light is None:
             continue
-        entities.append(PanasonicWiFiSleepSwitch(api, fan, state.light))
+        entities.append(PanasonicWiFiSleepSwitch(api, fan, store))
 
     _LOGGER.debug("Adding %s sleep mode switch(es)", len(entities))
     async_add_entities(entities)
@@ -58,13 +59,13 @@ class PanasonicWiFiSleepSwitch(SwitchEntity):  # type: ignore[misc]
     _attr_has_entity_name = True
     _attr_name = "Light sleep mode"
 
-    def __init__(self, api, fan: Fan, state: LightState) -> None:
+    def __init__(self, api, fan: Fan, store) -> None:
         """Initialize the switch."""
         self._api = api
         self._fan = fan
+        self._store = store
         self._attr_unique_id = f"{fan.unique_id}_light_sleep"
-        self._current_state = state
-        self._attr_is_on = state.sleep
+        self._attr_is_on = store.light(fan).sleep
 
         self._attr_device_info = {
             "identifiers": {(DOMAIN, self._fan.unique_id)},
@@ -84,7 +85,7 @@ class PanasonicWiFiSleepSwitch(SwitchEntity):  # type: ignore[misc]
 
     async def _set_sleep(self, sleep: bool) -> None:
         """Change the mode, leaving every other light setting as it is."""
-        current = self._current_state
+        current = self._store.light(self._fan)
         state = LightState(
             is_on=current.is_on,
             brightness=current.brightness,
@@ -96,7 +97,7 @@ class PanasonicWiFiSleepSwitch(SwitchEntity):  # type: ignore[misc]
         _LOGGER.debug("Setting sleep mode on %s to %s", self._fan.name, sleep)
         await self._api.set_light_state(self._fan, state)
 
-        self._current_state = state
+        self._store.set_light(self._fan, state)
         self._attr_is_on = sleep
         self.async_write_ha_state()
 
@@ -111,5 +112,5 @@ class PanasonicWiFiSleepSwitch(SwitchEntity):  # type: ignore[misc]
         if state.light is None:
             return
 
-        self._current_state = state.light
+        self._store.set_light(self._fan, state.light)
         self._attr_is_on = state.light.sleep

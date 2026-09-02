@@ -11,7 +11,7 @@ from _component import load
 
 pytest.importorskip("homeassistant", reason="Home Assistant is not installed")
 
-light, types_ = load("light", "types")
+light, types_, store_module = load("light", "types", "store")
 Fan = types_.Fan
 LightState = types_.LightState
 
@@ -43,8 +43,8 @@ def test_out_of_range_device_brightness_is_clamped(value):
 
 
 def test_entity_reports_brightness_and_colour_temperature_support():
-    entity = light.PanasonicWiFiLight(
-        None, FAN, LightState(is_on=True, brightness=58, color_temp=32)
+    entity, _ = make_entity(
+        LightState(is_on=True, brightness=58, color_temp=32)
     )
     assert entity.unique_id == "abc123_light"
     assert entity.color_mode == "color_temp"
@@ -83,9 +83,21 @@ class Recorder:
         self.sent.append(state)
 
 
-def make_entity(state):
+def make_store(light_state):
+    return store_module.StateStore(
+        {
+            FAN.unique_id: types_.DeviceState(
+                fan=types_.FanState(is_on=True, speed=3, reverse=False, yuragi=False),
+                light=light_state,
+            )
+        }
+    )
+
+
+def make_entity(state, store=None):
     api = Recorder()
-    entity = light.PanasonicWiFiLight(api, FAN, state)
+    store = store or make_store(state)
+    entity = light.PanasonicWiFiLight(api, FAN, store)
     entity.async_write_ha_state = lambda: None
     return entity, api
 
@@ -181,7 +193,7 @@ def test_the_light_offers_no_colour_picker():
 
 
 def test_entity_shares_a_device_with_the_fan():
-    entity = light.PanasonicWiFiLight(None, FAN, LightState(is_on=False, brightness=1))
+    entity, _ = make_entity(LightState(is_on=False, brightness=1))
     assert entity.device_info["identifiers"] == {("panasonic_wifan", "abc123")}
     assert entity.is_on is False
 
@@ -195,7 +207,12 @@ def setup_light(states, api=None):
     hass = type("Hass", (), {})()
     hass.data = {
         "panasonic_wifan": {
-            Entry.entry_id: {"api": api, "fans": [FAN], "states": states}
+            Entry.entry_id: {
+                "api": api,
+                "fans": [FAN],
+                "states": states,
+                "store": store_module.StateStore(states),
+            }
         }
     }
     added = []
@@ -250,3 +267,17 @@ def test_setup_survives_a_re_read_that_fails():
 
 
 
+
+
+def test_the_light_sees_a_mode_change_made_by_the_switch():
+    """Turning the light on after the sleep switch must not reset the mode."""
+    store = make_store(LightState(is_on=False, brightness=80, sleep=False))
+
+    # The switch puts the light into sleep mode.
+    store.set_light(FAN, LightState(is_on=False, brightness=80, sleep=True))
+
+    entity, api = make_entity(None, store=store)
+    asyncio.run(entity.async_turn_on())
+
+    assert api.sent[0].sleep is True
+    assert api.sent[0].is_on is True
