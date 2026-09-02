@@ -134,20 +134,11 @@ three. The read-back had looked like confirmation because the verification
 compared power and normal brightness alone; it now compares every field, and
 says explicitly that an echoed value is not proof the light acted.
 
-Sleep mode reaches Home Assistant three ways, which is deliberate rather than
-untidy:
-
-- **The brightness slider.** Sleep dims further than normal mode allows, so its
-  three steps sit below normal mode's hundred levels on one continuous scale of
-  103 levels. The bottom of the slider is sleep mode; above it is normal mode.
-  Dragging across the boundary switches the mode, and each mode keeps its own
-  brightness so nothing is lost in the move. This is what makes the light fully
-  controllable through a HomeKit bridge, which offers a brightness slider but
-  cannot represent a mode at all.
-- **An effect** (`Normal`/`Sleep`), for setting the mode without touching
-  brightness.
-- **A switch**, `Light sleep mode`, because HomeKit has no light-effect
-  characteristic and a switch is the only shape that crosses that bridge.
+Sleep mode is exposed as the light's effect (`Normal`/`Sleep`) rather than as a
+separate entity or switch, since it is a mode of one light. The brightness
+slider addresses whichever mode is active, snapping to the nearest step in
+sleep mode. Both brightness values travel in every command so that switching
+modes does not discard the other.
 
 The Panasonic app's own packets were never observed. The cloud's control log
 carries only the requesting client's commands, so `watch_controls.py` shows our

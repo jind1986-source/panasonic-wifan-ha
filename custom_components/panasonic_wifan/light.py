@@ -33,7 +33,6 @@ from .const import (
     MAX_COLOR_TEMP,
     MIN_BRIGHTNESS,
     MIN_COLOR_TEMP,
-    SLEEP_BRIGHTNESS_STEPS,
     WARM_KELVIN,
 )
 from .types import Fan, LightState
@@ -96,33 +95,22 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-# The light dims across two modes: sleep mode's three steps sit below normal
-# mode's hundred levels, since sleep dims further than the normal range allows.
-# Home Assistant gets them as one continuous scale, so the bottom of the slider
-# is sleep mode and everything above it is normal mode.
-SLEEP_LEVELS = len(SLEEP_BRIGHTNESS_STEPS)
-TOTAL_LEVELS = SLEEP_LEVELS + MAX_BRIGHTNESS
+def to_ha_brightness(value: int) -> int:
+    """Convert a device brightness step to Home Assistant's 1-255 scale."""
+    span = MAX_BRIGHTNESS - MIN_BRIGHTNESS
+    if span <= 0:
+        return 255
+    clamped = max(MIN_BRIGHTNESS, min(MAX_BRIGHTNESS, value))
+    return round((clamped - MIN_BRIGHTNESS) / span * 254) + 1
 
 
-def state_to_level(state: LightState) -> int:
-    """Where a light state sits on the combined scale, 1 to TOTAL_LEVELS."""
-    if state.sleep:
-        step = nearest_sleep_step(state.sleep_brightness)
-        return SLEEP_BRIGHTNESS_STEPS.index(step) + 1
-    brightness = max(MIN_BRIGHTNESS, min(MAX_BRIGHTNESS, state.brightness))
-    return SLEEP_LEVELS + brightness
-
-
-def level_to_ha_brightness(level: int) -> int:
-    """Convert a combined level to Home Assistant's 1-255 brightness."""
-    clamped = max(1, min(TOTAL_LEVELS, level))
-    return round((clamped - 1) / (TOTAL_LEVELS - 1) * 254) + 1
-
-
-def ha_brightness_to_level(brightness: int) -> int:
-    """Convert Home Assistant's 1-255 brightness to a combined level."""
-    level = round((brightness - 1) / 254 * (TOTAL_LEVELS - 1)) + 1
-    return max(1, min(TOTAL_LEVELS, level))
+def to_device_brightness(brightness: int) -> int:
+    """Convert Home Assistant's 1-255 brightness to a device step."""
+    span = MAX_BRIGHTNESS - MIN_BRIGHTNESS
+    if span <= 0:
+        return MAX_BRIGHTNESS
+    value = round((brightness - 1) / 254 * span) + MIN_BRIGHTNESS
+    return max(MIN_BRIGHTNESS, min(MAX_BRIGHTNESS, value))
 
 
 def to_kelvin(color_temp: int) -> int:
@@ -176,7 +164,7 @@ class PanasonicWiFiLight(LightEntity):  # type: ignore[misc]
         """Mirror a light state onto the entity's attributes."""
         self._current_state = state
         self._attr_is_on = state.is_on
-        self._attr_brightness = level_to_ha_brightness(state_to_level(state))
+        self._attr_brightness = to_ha_brightness(state.active_brightness)
         self._attr_color_temp_kelvin = to_kelvin(state.color_temp)
         self._attr_effect = EFFECT_SLEEP if state.sleep else EFFECT_NORMAL
 
@@ -192,22 +180,19 @@ class PanasonicWiFiLight(LightEntity):  # type: ignore[misc]
         if (kelvin := kwargs.get(ATTR_COLOR_TEMP_KELVIN)) is not None:
             color_temp = to_device_color_temp(kelvin)
 
-        # The slider spans both modes, so where it lands decides the mode: the
-        # bottom three levels are sleep mode, everything above is normal. The
-        # mode not chosen keeps the value the device is holding for it.
+        # Brightness belongs to whichever mode is active; the other mode keeps
+        # the value the device is holding for it.
         brightness = current.brightness
         sleep_brightness = current.sleep_brightness
         if (requested := kwargs.get(ATTR_BRIGHTNESS)) is not None:
-            level = ha_brightness_to_level(requested)
-            if level <= SLEEP_LEVELS:
-                sleep = True
-                sleep_brightness = SLEEP_BRIGHTNESS_STEPS[level - 1]
+            if sleep:
+                # Sleep mode has three fixed steps, so a slider value has to
+                # be snapped to the nearest; the device ignores anything else.
+                sleep_brightness = nearest_sleep_step(
+                    to_device_brightness(requested)
+                )
             else:
-                sleep = False
-                brightness = level - SLEEP_LEVELS
-        elif (effect := kwargs.get(ATTR_EFFECT)) is not None:
-            # Choosing the effect without a brightness keeps each mode's own.
-            sleep = effect == EFFECT_SLEEP
+                brightness = to_device_brightness(requested)
 
         await self._push(
             LightState(
