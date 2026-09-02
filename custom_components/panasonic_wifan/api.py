@@ -6,25 +6,62 @@ import aiohttp
 import asyncio
 from datetime import datetime as dt, timezone
 import logging
-from typing import Literal
+from typing import Literal, Sequence
 
+from . import packet
 from .auth import PanasonicGLBAuthClient
-from .const import MIN_SPEED, MAX_SPEED
-from .types import Fan, FanState
+from .const import (
+    CMD_HEADER,
+    DIGIT_HIGH_NIBBLE,
+    DIRECTION_FORWARD_LOW,
+    DIRECTION_HIGH_NIBBLE,
+    DIRECTION_REVERSE_LOW,
+    ID_LIGHT_BRIGHTNESS,
+    ID_LIGHT_POWER,
+    ID_OFF_TIMER,
+    ID_POWER,
+    ID_SPEED,
+    ID_TIMER,
+    ID_DIRECTION,
+    ID_YURAGI,
+    MAX_BRIGHTNESS,
+    MAX_SPEED,
+    MIN_BRIGHTNESS,
+    MIN_SPEED,
+    POWER_OFF,
+    POWER_ON,
+    QUERY_IDS,
+    YURAGI_OFF,
+    YURAGI_ON,
+)
+from .packet import Field, PacketError
+from .types import DeviceState, Fan, FanState, LightState
 
 BASE_URL = "https://prod.mycfan.pgtls.net/v1/mycfan/user"
+DEVICE_CONTROLS_URL = "https://prod.mycfan.pgtls.net/v1/mycfan/deviceControls"
 API_KEY = "rZLwuRtU0nFb20Mh6LShL6uY3fZ5tBlarz4ONmdl"
 OAUTH_CLIENT_ID = "8k1QeEXDxt3qGgYOvDY7NmZLfl60YfNi"
-QUERY_PACKET = "0A00800000F00000F10000F20000F80000F90000FA0000FB00008600008800"
-OFF_PACKET = "060093014200FD010400FC013000FE01400080013100FA043140FFFF"
-ON_PACKET = (
-    "090093014200FD010400FC013000FE01400080013000F0013200F1014100F2013100F8043131FFFF"
-)
+
+# Trailing fields the app sends with every command. They look like timer
+# slots; 0xFF appears to mean "leave alone".
+ON_TRAILER = Field(id=ID_TIMER, value=bytes.fromhex("FF31FFFF"))
+OFF_TRAILER = Field(id=ID_OFF_TIMER, value=bytes.fromhex("3140FFFF"))
+
 SLEEP_AFTER_QUERY = 2  # seconds
 GET = "GET"
 SET = "SET"
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _query_ids() -> tuple[int, ...]:
+    """Field ids to poll, including the light's if they are known."""
+    ids = list(QUERY_IDS)
+    ids.extend(i for i in (ID_LIGHT_POWER, ID_LIGHT_BRIGHTNESS) if i is not None)
+    return tuple(ids)
+
+
+QUERY_PACKET = packet.query(_query_ids())
 
 
 class ApiClient:
@@ -49,13 +86,13 @@ class ApiClient:
         data = await self._request("GET", f"{BASE_URL}/devices")
         return [Fan.from_api(item) for item in data.get("devices", [])]
 
-    async def get_state_for_fans(self, fans: list[Fan]) -> dict[str, FanState]:
+    async def get_state_for_fans(self, fans: list[Fan]) -> dict[str, DeviceState]:
         fans_by_id = {fan.unique_id: fan for fan in fans}
 
         for fan in fans:
             await self._request(
                 "POST",
-                "https://prod.mycfan.pgtls.net/v1/mycfan/deviceControls",
+                DEVICE_CONTROLS_URL,
                 json={
                     "appliance_id": fan.unique_id,
                     "method": GET,
@@ -66,10 +103,7 @@ class ApiClient:
         # Wait a bit to allow cloud to process the responses
         await asyncio.sleep(SLEEP_AFTER_QUERY)
 
-        data = await self._request(
-            "GET",
-            "https://prod.mycfan.pgtls.net/v1/mycfan/deviceControls",
-        )
+        data = await self._request("GET", DEVICE_CONTROLS_URL)
 
         """
         Example response data:
@@ -92,10 +126,12 @@ class ApiClient:
 
         _LOGGER.debug("Fetched deviceControls: %s", data)
 
-        fan_states: dict[str, FanState] = {}
-        if "controls" in data:
-            data["controls"].sort(key=lambda x: x.get("completed_at", ""), reverse=True)
-            for control in data["controls"]:
+        device_states: dict[str, DeviceState] = {}
+        controls = sorted(
+            _controls(data), key=lambda x: x.get("completed_at", ""), reverse=True
+        )
+        if controls:
+            for control in controls:
                 if control["method"] != GET:
                     continue
                 if control.get("status") != "complete":
@@ -104,43 +140,135 @@ class ApiClient:
                     continue
                 if (fan := fans_by_id.get(control["appliance_id"])) is None:
                     continue
-                if fan.unique_id in fan_states:
+                if fan.unique_id in device_states:
                     continue
 
                 state = decode_get_state_packet(control["packet"])
-                fan_states[fan.unique_id] = state
+                device_states[fan.unique_id] = state
                 _LOGGER.debug(
-                    "Fetched state for %s: is_on=%s, speed=%s, reverse=%s, yuragi=%s",
+                    "Fetched state for %s: is_on=%s, speed=%s, reverse=%s, "
+                    "yuragi=%s, light=%s",
                     fan.name,
-                    state.is_on,
-                    state.speed,
-                    state.reverse,
-                    state.yuragi,
+                    state.fan.is_on,
+                    state.fan.speed,
+                    state.fan.reverse,
+                    state.fan.yuragi,
+                    state.light,
                 )
 
-        return fan_states
+        return device_states
 
-    async def get_state_for_fan(self, fan: Fan) -> FanState:
+    async def get_state_for_fan(self, fan: Fan) -> DeviceState:
         states = await self.get_state_for_fans([fan])
         return states[fan.unique_id]
 
+    async def _latest_control(self, fan: Fan) -> dict | None:
+        """The most recently completed GET response for one appliance."""
+        data = await self._request("GET", DEVICE_CONTROLS_URL)
+        controls = [
+            control
+            for control in _controls(data)
+            if control.get("method") == GET
+            and control.get("appliance_id") == fan.unique_id
+            and control.get("status") == "complete"
+        ]
+        if not controls:
+            return None
+        return max(controls, key=lambda control: control.get("completed_at", ""))
+
+    async def controls(self) -> list[dict]:
+        """Every control record the cloud reports for this account.
+
+        Includes commands issued by other clients, Panasonic's own app among
+        them, which is how the app's packets can be observed rather than
+        guessed at.
+        """
+        data = await self._request("GET", DEVICE_CONTROLS_URL)
+        return _controls(data)
+
+    async def newest_completed_at(self, fan: Fan) -> str:
+        """Timestamp of the most recent completed response, or an empty string."""
+        control = await self._latest_control(fan)
+        return control.get("completed_at", "") if control else ""
+
+    async def request_fields(self, fan: Fan, ids: Sequence[int]) -> None:
+        """Ask a device for fields without waiting for its reply.
+
+        The cloud queues each request separately, so several can be in flight at
+        once and collected together with recent_controls().
+        """
+        await self._post_device_controls(fan, GET, packet.query(ids))
+
+    async def recent_controls(self, fan: Fan, since: str = "") -> list[dict]:
+        """Completed responses for one appliance newer than the given timestamp."""
+        data = await self._request("GET", DEVICE_CONTROLS_URL)
+        controls = [
+            control
+            for control in _controls(data)
+            if control.get("method") == GET
+            and control.get("appliance_id") == fan.unique_id
+            and control.get("status") == "complete"
+            and control.get("completed_at", "") > since
+        ]
+        return sorted(controls, key=lambda control: control.get("completed_at", ""))
+
+    async def query_raw(
+        self,
+        fan: Fan,
+        ids: Sequence[int],
+        *,
+        attempts: int = 5,
+        delay: float = SLEEP_AFTER_QUERY,
+    ) -> dict | None:
+        """Ask a device for arbitrary fields and return the raw control record.
+
+        Used by the field discovery scripts. Returns None if no fresh response
+        arrives, and the record itself — including a failed ``result`` — when
+        the device rejects the query.
+        """
+        previous = await self._latest_control(fan)
+        since = previous.get("completed_at", "") if previous else ""
+
+        await self._post_device_controls(fan, GET, packet.query(ids))
+
+        for _ in range(attempts):
+            await asyncio.sleep(delay)
+            control = await self._latest_control(fan)
+            if control and control.get("completed_at", "") > since:
+                return control
+
+        return None
+
     async def set_state(self, fan: Fan, state: FanState):
-        packet = make_command_packet(state)
-        await self._post_device_controls(fan, SET, packet)
+        await self._post_device_controls(fan, SET, make_command_packet(state))
+
+    async def set_light_state(self, fan: Fan, state: LightState):
+        await self._post_device_controls(fan, SET, make_light_command_packet(state))
 
     async def _post_device_controls(
-        self, fan: Fan, method: Literal["GET", "SET"], packet: str
+        self, fan: Fan, method: Literal["GET", "SET"], payload: str
     ):
         data = await self._request(
             "POST",
-            "https://prod.mycfan.pgtls.net/v1/mycfan/deviceControls",
+            DEVICE_CONTROLS_URL,
             json={
                 "appliance_id": fan.unique_id,
                 "method": method,
-                "packet": packet,
+                "packet": payload,
             },
         )
         _LOGGER.debug("deviceControls response: %s", data)
+
+
+def _controls(data) -> list[dict]:
+    """The control records in a deviceControls response.
+
+    The endpoint answers with JSON null when nothing is queued, and omits the
+    key in some replies, so neither can be assumed present.
+    """
+    if not isinstance(data, dict):
+        return []
+    return data.get("controls") or []
 
 
 def get_timestamp():
@@ -148,29 +276,78 @@ def get_timestamp():
     return now.strftime("%Y%m%d%H%M%S+0000")
 
 
+def _header_fields() -> list[Field]:
+    return [
+        Field(id=field_id, value=bytes([value])) for field_id, value in CMD_HEADER
+    ]
+
+
+def _digit_field(field_id: int, value: int) -> Field:
+    """A numeric setting, stored as one byte with 0x3 in the high nibble."""
+    return Field(id=field_id, value=packet.nibble_byte(DIGIT_HIGH_NIBBLE, value))
+
+
 def make_command_packet(state: FanState) -> str:
     if state.speed < MIN_SPEED or state.speed > MAX_SPEED:
         raise ValueError(f"Speed must be between {MIN_SPEED} and {MAX_SPEED}")
 
+    fields = _header_fields()
+
     if not state.is_on:
-        return OFF_PACKET
+        fields.append(_digit_field(ID_POWER, POWER_OFF))
+        fields.append(OFF_TRAILER)
+        return packet.encode(fields)
 
-    speed_nibble = f"{state.speed:01X}"
-    reverse_nibble = "2" if state.reverse else "1"
-    yuragi_nibble = "0" if state.yuragi else "1"
-
-    nibbles = (
-        f"090093014200FD010400FC013000FE014000800130"
-        f"00F0013{speed_nibble}"
-        f"00F1014{reverse_nibble}"
-        f"00F2013{yuragi_nibble}"
-        f"00F804FF31FFFF"
+    fields.append(_digit_field(ID_POWER, POWER_ON))
+    fields.append(_digit_field(ID_SPEED, state.speed))
+    fields.append(
+        Field(
+            id=ID_DIRECTION,
+            value=packet.nibble_byte(
+                DIRECTION_HIGH_NIBBLE,
+                DIRECTION_REVERSE_LOW if state.reverse else DIRECTION_FORWARD_LOW,
+            ),
+        )
     )
+    fields.append(
+        _digit_field(ID_YURAGI, YURAGI_ON if state.yuragi else YURAGI_OFF)
+    )
+    fields.append(ON_TRAILER)
 
-    return nibbles
+    return packet.encode(fields)
 
 
-def decode_get_state_packet(packet: str) -> FanState:
+def make_light_command_packet(state: LightState) -> str:
+    """Build a SET packet for the light.
+
+    Raises RuntimeError until the light's field ids are known; see
+    ID_LIGHT_POWER in const.py.
+    """
+    if ID_LIGHT_POWER is None or ID_LIGHT_BRIGHTNESS is None:
+        raise RuntimeError(
+            "Light field ids are unknown for this integration; "
+            "run scripts/sweep_ids.py to discover them"
+        )
+    if state.brightness < MIN_BRIGHTNESS or state.brightness > MAX_BRIGHTNESS:
+        raise ValueError(
+            f"Brightness must be between {MIN_BRIGHTNESS} and {MAX_BRIGHTNESS}"
+        )
+
+    fields = _header_fields()
+    fields.append(
+        _digit_field(ID_LIGHT_POWER, POWER_ON if state.is_on else POWER_OFF)
+    )
+    if state.is_on:
+        # Brightness is a percentage byte, so it is written whole rather than
+        # through the nibble encoding the fan settings use.
+        fields.append(
+            Field(id=ID_LIGHT_BRIGHTNESS, value=bytes([state.brightness]))
+        )
+
+    return packet.encode(fields)
+
+
+def decode_get_state_packet(response: str) -> DeviceState:
     """
     Example packet value:
     0A0080013000F0013100F1014100F2013100F8043131000000F902000000FA04314
@@ -178,38 +355,60 @@ def decode_get_state_packet(packet: str) -> FanState:
     000000000000000000000000000000000000000000000000880142
     """
 
-    if packet[:9] != "0A0080013":
-        raise ValueError("Unknown packet header", packet[:9])
+    fields = packet.as_dict(packet.decode(response))
 
-    if packet[9:10] == "0":
+    def require(field_id: int, name: str) -> Field:
+        if (field := fields.get(field_id)) is None:
+            raise PacketError(f"Packet has no {name} field ({field_id:#06x})")
+        return field
+
+    power = require(ID_POWER, "power")
+    if power.high_nibble != DIGIT_HIGH_NIBBLE:
+        raise PacketError(f"Unknown power value {power.byte:#04x}")
+    if power.low_nibble == POWER_ON:
         is_on = True
-    elif packet[9:10] == "1":
+    elif power.low_nibble == POWER_OFF:
         is_on = False
     else:
-        raise ValueError("Unknown ON/OFF nibble", packet[9:10])
+        raise PacketError(f"Unknown ON/OFF nibble {power.low_nibble:#x}")
 
-    speed_prefix = packet[10:17]
-    if speed_prefix != "00F0013":
-        raise ValueError("Unknown speed prefix", speed_prefix)
+    speed_field = require(ID_SPEED, "speed")
+    if speed_field.high_nibble != DIGIT_HIGH_NIBBLE:
+        raise PacketError(f"Unknown speed value {speed_field.byte:#04x}")
+    speed = speed_field.low_nibble
 
-    speed_nibble = packet[17:18]
-    speed = int(speed_nibble, 16)
+    direction = require(ID_DIRECTION, "direction")
+    if direction.high_nibble != DIRECTION_HIGH_NIBBLE:
+        raise PacketError(f"Unknown direction value {direction.byte:#04x}")
+    reverse = direction.low_nibble == DIRECTION_REVERSE_LOW
 
-    reverse_prefix = packet[18:25]
-    if reverse_prefix != "00F1014":
-        raise ValueError("Unknown reverse prefix", reverse_prefix)
-    reverse_nibble = packet[25:26]
-    reverse = reverse_nibble == "2"
+    yuragi_field = require(ID_YURAGI, "yuragi")
+    if yuragi_field.high_nibble != DIGIT_HIGH_NIBBLE:
+        raise PacketError(f"Unknown yuragi value {yuragi_field.byte:#04x}")
+    yuragi = yuragi_field.low_nibble == YURAGI_ON
 
-    yuragi_prefix = packet[26:33]
-    if yuragi_prefix != "00F2013":
-        raise ValueError("Unknown yuragi prefix", yuragi_prefix)
-    yuragi_nibble = packet[33:34]
-    yuragi = yuragi_nibble == "0"
-
-    return FanState(
-        is_on=is_on,
-        speed=speed,
-        reverse=reverse,
-        yuragi=yuragi,
+    return DeviceState(
+        fan=FanState(
+            is_on=is_on,
+            speed=speed,
+            reverse=reverse,
+            yuragi=yuragi,
+        ),
+        light=_decode_light(fields),
     )
+
+
+def _decode_light(fields: dict[int, Field]) -> LightState | None:
+    """Read light state, if this device reports any."""
+    if ID_LIGHT_POWER is None:
+        return None
+    if (power := fields.get(ID_LIGHT_POWER)) is None:
+        return None
+
+    brightness = MAX_BRIGHTNESS
+    if ID_LIGHT_BRIGHTNESS is not None and (
+        field := fields.get(ID_LIGHT_BRIGHTNESS)
+    ):
+        brightness = min(MAX_BRIGHTNESS, max(MIN_BRIGHTNESS, field.byte))
+
+    return LightState(is_on=power.low_nibble == POWER_ON, brightness=brightness)

@@ -9,6 +9,7 @@ A native Home Assistant integration for Panasonic Malaysia WiFi fans. This integ
 - Reverse mode
 - Yuragi mode (implemented as "oscillation")
 - Optimistic state updates (polling every 5 minutes)
+- Light control with brightness, on fans that have a light
 
 ## Installation
 
@@ -34,6 +35,103 @@ A native Home Assistant integration for Panasonic Malaysia WiFi fans. This integ
 5. Click Submit
 
 Your fans will be automatically discovered and added as devices.
+
+## Protocol
+
+The cloud API carries opaque hex packets to and from the fan. A packet is a
+one-byte field count followed by that many TLV fields:
+
+```
+[count: 1 byte] ( [id: 2 bytes] [length: 1 byte] [value: length bytes] )*
+```
+
+So `0A0080013000F00131...` means ten fields, of which the first is `0x0080`
+(power), one byte long, value `0x30`. Numeric settings put `0x3` in the high
+nibble and the number in the low one, so speed 10 is `0x3A`.
+
+Fields seen so far:
+
+| Id | Meaning |
+| --- | --- |
+| `0x0080` | Power (`0x30` on, `0x31` off) |
+| `0x00F0` | Speed, 1-10 |
+| `0x00F1` | Direction (`0x41` forward, `0x42` reverse) |
+| `0x00F2` | Yuragi (`0x30` on, `0x31` off) |
+| `0x00F3` | Light power (`0x30` on, `0x31` off) |
+| `0x00F5` | Light brightness, percentage byte (`0x64` = 100%) |
+| `0x00F4`, `0x00F6`, `0x00F7` | Unmapped; `0x00F6` looks like a second percentage |
+| `0x0081`, `0x0082`, `0x008A` | Unmapped |
+| `0x008C` | Model name in ASCII, e.g. `F-M12GC` |
+| `0x009D`, `0x009E`, `0x009F` | Tables, not decoded |
+| `0x00F8`, `0x00F9`, `0x00FA`, `0x00FB` | Timers, not fully decoded |
+| `0x0086` | 46-byte blob, not decoded |
+| `0x0088` | Unknown, constant `0x42` so far |
+| `0x0093`, `0x00FC`, `0x00FD`, `0x00FE` | Constant header on every SET packet |
+
+## Light control
+
+The light is field `0x00F3` (`0x30` on, `0x31` off, the same convention as the
+fan's power) and its brightness is field `0x00F5`, a plain percentage byte
+rather than the `0x3X` digit encoding the fan settings use.
+
+Both were found by polling every field on an F-M12GC while operating the light
+in the Panasonic app, with a deliberate fan speed change in the same run as a
+control. A device that does not report `0x00F3` gets no light entity.
+
+### Finding fields on another model
+
+If a model exposes something this integration does not, the same tooling
+applies. All three read-only scripts take `--device <index or name>`.
+
+Print the decoded state of every fan:
+
+```bash
+python3 scripts/show_state.py
+```
+
+Find which field ids a device answers to at all. The fan rejects a query
+containing any field it does not have, so this asks one id per request and
+keeps a wave of them in flight:
+
+```bash
+python3 scripts/sweep_ids.py --device 1 --out fields.json
+```
+
+Watch those fields and print whatever changes, which is what identifies a
+control. Operate the thing you are looking for while it runs, and change
+something you already understand as a control:
+
+```bash
+python3 scripts/watch_fields.py --device 1 --ids-from fields.json
+```
+
+Read the cloud's control log, decoded. Note that it appears to carry only this
+client's own commands, so the Panasonic app's packets do not show up here:
+
+```bash
+python3 scripts/watch_controls.py --history
+```
+
+Finally, `scripts/try_light.py` sends a single light command and reports
+whether the device came back in the state that was asked for. It is the only
+script that writes to an appliance:
+
+```bash
+python3 scripts/try_light.py --device 1 --on --brightness 40
+```
+
+## Development
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install aiohttp pytest
+.venv/bin/python -m pytest tests
+```
+
+The tests cover the packet codec and every command the integration builds,
+including the exact bytes for each fan command, and they run without Home
+Assistant installed. Installing `homeassistant` into the same virtualenv adds
+the light entity tests, which are skipped otherwise.
 
 ## Support
 

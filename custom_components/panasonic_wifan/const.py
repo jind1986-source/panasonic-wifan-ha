@@ -3,7 +3,7 @@
 DOMAIN = "panasonic_wifan"
 
 # Platforms
-PLATFORMS = ["fan"]
+PLATFORMS = ["fan", "light"]
 
 # Speed settings
 MIN_SPEED = 1
@@ -13,3 +13,80 @@ SPEED_STEP = 1
 # Config flow
 CONF_USERNAME = "username"
 CONF_PASSWORD = "password"
+
+# --- Packet field ids -------------------------------------------------------
+#
+# Ids confirmed by observing traffic for the F-M12EC (fan, no light).
+
+ID_POWER = 0x0080
+ID_SPEED = 0x00F0
+ID_DIRECTION = 0x00F1
+ID_YURAGI = 0x00F2
+
+# Queried alongside the settings above; contents not yet understood. 0x0086 is
+# a 46-byte blob, the rest look like timer state.
+ID_TIMER = 0x00F8
+ID_UNKNOWN_F9 = 0x00F9
+ID_OFF_TIMER = 0x00FA
+ID_UNKNOWN_FB = 0x00FB
+ID_INFO = 0x0086
+ID_UNKNOWN_88 = 0x0088
+
+# Fields every SET packet opens with. Meaning unknown, values are constant.
+ID_CMD_MARKER = 0x0093
+ID_CMD_FC = 0x00FC
+ID_CMD_FD = 0x00FD
+ID_CMD_FE = 0x00FE
+
+CMD_HEADER: tuple[tuple[int, int], ...] = (
+    (ID_CMD_MARKER, 0x42),
+    (ID_CMD_FD, 0x04),
+    (ID_CMD_FC, 0x30),
+    (ID_CMD_FE, 0x40),
+)
+
+# Field ids read on every state poll.
+QUERY_IDS: tuple[int, ...] = (
+    ID_POWER,
+    ID_SPEED,
+    ID_DIRECTION,
+    ID_YURAGI,
+    ID_TIMER,
+    ID_UNKNOWN_F9,
+    ID_OFF_TIMER,
+    ID_UNKNOWN_FB,
+    ID_INFO,
+    ID_UNKNOWN_88,
+)
+
+# Value nibbles
+POWER_ON = 0x0
+POWER_OFF = 0x1
+DIRECTION_HIGH_NIBBLE = 0x4
+DIRECTION_FORWARD_LOW = 0x1
+DIRECTION_REVERSE_LOW = 0x2
+DIGIT_HIGH_NIBBLE = 0x3
+YURAGI_ON = 0x0
+YURAGI_OFF = 0x1
+
+# --- Light control ----------------------------------------------------------
+#
+# Found by polling every field on an F-M12GC while operating the light in the
+# Panasonic app: 0x00F3 flipped with the light, 0x00F5 with the brightness
+# slider, and a deliberate fan speed change moved 0x00F0 in the same run as a
+# control.
+ID_LIGHT_POWER: int | None = 0x00F3
+ID_LIGHT_BRIGHTNESS: int | None = 0x00F5
+
+# Brightness is a plain percentage byte, not the 0x3X digit encoding the fan
+# settings use: 0x64 is 100%, 0x3A is 58%.
+MIN_BRIGHTNESS = 1
+MAX_BRIGHTNESS = 100
+
+# Neighbouring fields that move with neither power, speed, direction, yuragi,
+# light power nor brightness. 0x00F4 carries 0x42, the shape the direction
+# field uses, and 0x00F6 carries a second percentage-looking byte — a colour
+# temperature setting would fit both. Left alone until observed changing.
+ID_UNKNOWN_F4 = 0x00F4
+ID_UNKNOWN_F6 = 0x00F6
+ID_UNKNOWN_F7 = 0x00F7

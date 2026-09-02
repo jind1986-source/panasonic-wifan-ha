@@ -66,6 +66,22 @@ class FanState:
     yuragi: bool
 
 
+@dataclass(frozen=True)
+class LightState:
+    """State of the light fitted to a fan, when it has one."""
+
+    is_on: bool
+    brightness: int
+
+
+@dataclass(frozen=True)
+class DeviceState:
+    """Everything a single state poll told us about one appliance."""
+
+    fan: FanState
+    light: LightState | None = None
+
+
 @dataclass
 class AuthToken:
     access_token: str
