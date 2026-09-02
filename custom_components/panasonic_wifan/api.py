@@ -18,15 +18,16 @@ from .const import (
     DIRECTION_REVERSE_LOW,
     ID_LIGHT_BRIGHTNESS,
     ID_LIGHT_POWER,
-    LIGHT_COMPANION_IDS,
+    LIGHT_MODE_NORMAL,
+    LIGHT_MODE_SLEEP,
     ID_OFF_TIMER,
     ID_POWER,
     ID_SPEED,
     ID_TIMER,
     ID_DIRECTION,
     ID_LIGHT_COLOR_TEMP,
-    ID_UNKNOWN_F4,
-    ID_UNKNOWN_F7,
+    ID_LIGHT_MODE,
+    ID_LIGHT_SLEEP_BRIGHTNESS,
     ID_YURAGI,
     MAX_BRIGHTNESS,
     MAX_COLOR_TEMP,
@@ -68,8 +69,8 @@ def _query_ids() -> tuple[int, ...]:
     if ID_LIGHT_BRIGHTNESS is not None:
         ids.append(ID_LIGHT_BRIGHTNESS)
     ids.append(ID_LIGHT_COLOR_TEMP)
-    # Polled because a light command has to send them back.
-    ids.extend(LIGHT_COMPANION_IDS)
+    ids.append(ID_LIGHT_MODE)
+    ids.append(ID_LIGHT_SLEEP_BRIGHTNESS)
     return tuple(ids)
 
 
@@ -309,18 +310,6 @@ class ApiClient:
         await self._post_device_controls(fan, SET, make_command_packet(state))
 
     async def set_light_state(self, fan: Fan, state: LightState):
-        """Send a light command, reading the companion fields if needed."""
-        if not state.companions:
-            current = await self.get_state_for_fan(fan)
-            if current.light is None:
-                raise RuntimeError(f"{fan.name} reports no light")
-            state = LightState(
-                is_on=state.is_on,
-                brightness=state.brightness,
-                color_temp=state.color_temp,
-                companions=current.light.companions,
-            )
-
         await self._post_device_controls(fan, SET, make_light_command_packet(state))
 
     async def _post_device_controls(
@@ -400,42 +389,47 @@ def make_light_command_packet(state: LightState) -> str:
 
     The device ignores a command carrying only power and brightness — it beeps
     and does nothing — so the whole light group goes out in the order the
-    device reports it: power, 0x00F4, brightness, 0x00F6, 0x00F7. The three
-    unexplained fields come from `state.companions`, read from the device.
+    device reports it: power, mode, brightness, colour temperature, sleep
+    brightness. Values for the mode not currently active are sent as held, so
+    switching modes does not discard the other one's setting.
     """
     if ID_LIGHT_POWER is None or ID_LIGHT_BRIGHTNESS is None:
         raise RuntimeError(
             "Light field ids are unknown for this integration; "
             "run scripts/sweep_ids.py to discover them"
         )
-    if state.brightness < MIN_BRIGHTNESS or state.brightness > MAX_BRIGHTNESS:
-        raise ValueError(
-            f"Brightness must be between {MIN_BRIGHTNESS} and {MAX_BRIGHTNESS}"
-        )
+
+    for name, value in (
+        ("Brightness", state.brightness),
+        ("Sleep brightness", state.sleep_brightness),
+    ):
+        if value < MIN_BRIGHTNESS or value > MAX_BRIGHTNESS:
+            raise ValueError(
+                f"{name} must be between {MIN_BRIGHTNESS} and {MAX_BRIGHTNESS}"
+            )
     if state.color_temp < MIN_COLOR_TEMP or state.color_temp > MAX_COLOR_TEMP:
         raise ValueError(
             f"Colour temperature must be between {MIN_COLOR_TEMP} and "
             f"{MAX_COLOR_TEMP}"
         )
 
-    companions = dict(state.companions)
-    missing = [f"{i:#06x}" for i in LIGHT_COMPANION_IDS if i not in companions]
-    if missing:
-        raise ValueError(
-            "A light command needs the device's own values for "
-            f"{', '.join(missing)}; read the state first"
-        )
-
     fields = _header_fields()
     fields.append(
         _digit_field(ID_LIGHT_POWER, POWER_ON if state.is_on else POWER_OFF)
     )
-    fields.append(Field(id=ID_UNKNOWN_F4, value=companions[ID_UNKNOWN_F4]))
-    # Brightness is a percentage byte, so it is written whole rather than
-    # through the nibble encoding the fan settings use.
+    fields.append(
+        Field(
+            id=ID_LIGHT_MODE,
+            value=bytes([LIGHT_MODE_SLEEP if state.sleep else LIGHT_MODE_NORMAL]),
+        )
+    )
+    # These are percentages, so they are written whole rather than through the
+    # nibble encoding the fan settings use.
     fields.append(Field(id=ID_LIGHT_BRIGHTNESS, value=bytes([state.brightness])))
     fields.append(Field(id=ID_LIGHT_COLOR_TEMP, value=bytes([state.color_temp])))
-    fields.append(Field(id=ID_UNKNOWN_F7, value=companions[ID_UNKNOWN_F7]))
+    fields.append(
+        Field(id=ID_LIGHT_SLEEP_BRIGHTNESS, value=bytes([state.sleep_brightness]))
+    )
 
     return packet.encode(fields)
 
@@ -508,15 +502,18 @@ def _decode_light(fields: dict[int, Field]) -> LightState | None:
     if field := fields.get(ID_LIGHT_COLOR_TEMP):
         color_temp = min(MAX_COLOR_TEMP, max(MIN_COLOR_TEMP, field.byte))
 
-    companions = tuple(
-        (field_id, fields[field_id].value)
-        for field_id in LIGHT_COMPANION_IDS
-        if field_id in fields
-    )
+    sleep = False
+    if field := fields.get(ID_LIGHT_MODE):
+        sleep = field.byte == LIGHT_MODE_SLEEP
+
+    sleep_brightness = MIN_BRIGHTNESS
+    if field := fields.get(ID_LIGHT_SLEEP_BRIGHTNESS):
+        sleep_brightness = min(MAX_BRIGHTNESS, max(MIN_BRIGHTNESS, field.byte))
 
     return LightState(
         is_on=power.low_nibble == POWER_ON,
         brightness=brightness,
         color_temp=color_temp,
-        companions=companions,
+        sleep=sleep,
+        sleep_brightness=sleep_brightness,
     )

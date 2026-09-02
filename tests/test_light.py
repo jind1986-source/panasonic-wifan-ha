@@ -73,51 +73,97 @@ def test_out_of_range_kelvin_is_clamped(kelvin):
     assert 0 <= light.to_device_color_temp(kelvin) <= 100
 
 
-def test_turning_on_with_a_kelvin_value_sends_it():
-    sent = []
+class Recorder:
+    """Stands in for the API, keeping what the entity sent."""
 
-    class Api:
-        async def set_light_state(self, fan, state):
-            sent.append(state)
+    def __init__(self):
+        self.sent = []
 
-    entity = light.PanasonicWiFiLight(
-        Api(),
-        FAN,
-        LightState(
-            is_on=False,
-            brightness=58,
-            color_temp=0,
-            companions=((0x00F4, b"\x42"), (0x00F7, b"\x01")),
-        ),
-    )
+    async def set_light_state(self, fan, state):
+        self.sent.append(state)
+
+
+def make_entity(state):
+    api = Recorder()
+    entity = light.PanasonicWiFiLight(api, FAN, state)
     entity.async_write_ha_state = lambda: None
+    return entity, api
 
+
+def test_turning_on_with_a_kelvin_value_sends_it():
+    entity, api = make_entity(LightState(is_on=False, brightness=58, color_temp=0))
     asyncio.run(entity.async_turn_on(color_temp_kelvin=6500))
-    assert sent[0].color_temp == 100
-    assert sent[0].is_on is True
+    assert api.sent[0].color_temp == 100
+    assert api.sent[0].is_on is True
 
 
 def test_turning_on_without_a_kelvin_value_keeps_the_current_one():
-    sent = []
-
-    class Api:
-        async def set_light_state(self, fan, state):
-            sent.append(state)
-
-    entity = light.PanasonicWiFiLight(
-        Api(),
-        FAN,
-        LightState(
-            is_on=False,
-            brightness=58,
-            color_temp=32,
-            companions=((0x00F4, b"\x42"), (0x00F7, b"\x01")),
-        ),
-    )
-    entity.async_write_ha_state = lambda: None
-
+    entity, api = make_entity(LightState(is_on=False, brightness=58, color_temp=32))
     asyncio.run(entity.async_turn_on())
-    assert sent[0].color_temp == 32
+    assert api.sent[0].color_temp == 32
+
+
+def test_the_light_offers_normal_and_sleep_as_effects():
+    entity, _ = make_entity(LightState(is_on=True, brightness=58))
+    assert entity.effect_list == ["Normal", "Sleep"]
+    assert entity.effect == "Normal"
+
+
+def test_selecting_sleep_switches_the_mode():
+    entity, api = make_entity(
+        LightState(is_on=True, brightness=58, sleep=False, sleep_brightness=5)
+    )
+    asyncio.run(entity.async_turn_on(effect="Sleep"))
+    assert api.sent[0].sleep is True
+    assert entity.effect == "Sleep"
+
+
+def test_a_sleeping_light_reports_its_sleep_brightness():
+    entity, _ = make_entity(
+        LightState(is_on=True, brightness=100, sleep=True, sleep_brightness=5)
+    )
+    assert entity.brightness == light.to_ha_brightness(5)
+
+
+def test_brightness_in_sleep_mode_changes_the_sleep_brightness():
+    """Sleep mode has its own dimmer, below the normal range."""
+    entity, api = make_entity(
+        LightState(is_on=True, brightness=80, sleep=True, sleep_brightness=50)
+    )
+    asyncio.run(entity.async_turn_on(brightness=light.to_ha_brightness(10)))
+    assert api.sent[0].sleep_brightness == 10
+    assert api.sent[0].brightness == 80  # the normal setting is untouched
+
+
+def test_brightness_in_normal_mode_leaves_the_sleep_brightness_alone():
+    entity, api = make_entity(
+        LightState(is_on=True, brightness=80, sleep=False, sleep_brightness=5)
+    )
+    asyncio.run(entity.async_turn_on(brightness=light.to_ha_brightness(30)))
+    assert api.sent[0].brightness == 30
+    assert api.sent[0].sleep_brightness == 5
+
+
+def test_turning_off_keeps_every_setting():
+    entity, api = make_entity(
+        LightState(
+            is_on=True, brightness=80, color_temp=32, sleep=True, sleep_brightness=5
+        )
+    )
+    asyncio.run(entity.async_turn_off())
+    sent = api.sent[0]
+    assert sent.is_on is False
+    assert (sent.brightness, sent.color_temp, sent.sleep, sent.sleep_brightness) == (
+        80, 32, True, 5
+    )
+
+
+def test_the_light_offers_no_colour_picker():
+    """The fitting has white balance only, so no RGB mode is declared."""
+    entity, _ = make_entity(LightState(is_on=True, brightness=58))
+    assert entity.supported_color_modes == {"color_temp"}
+    assert "hs" not in entity.supported_color_modes
+    assert "rgb" not in entity.supported_color_modes
 
 
 def test_entity_shares_a_device_with_the_fan():
@@ -189,21 +235,4 @@ def test_setup_survives_a_re_read_that_fails():
     assert setup_light({}, api=Api()) == []
 
 
-def test_entity_sends_the_companions_it_last_read():
-    """Without them the device beeps and ignores the command."""
-    companions = ((0x00F4, b"\x42"), (0x00F6, b"\x20"), (0x00F7, b"\x01"))
-    sent = []
 
-    class Api:
-        async def set_light_state(self, fan, state):
-            sent.append(state)
-
-    entity = light.PanasonicWiFiLight(
-        Api(), FAN, LightState(is_on=False, brightness=58, companions=companions)
-    )
-    entity.hass = None
-    entity.async_write_ha_state = lambda: None
-
-    asyncio.run(entity.async_turn_on())
-    assert sent[0].companions == companions
-    assert sent[0].is_on is True

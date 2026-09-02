@@ -113,10 +113,23 @@ temperatures are not published, so those Kelvin ends are a reading of "warm"
 and "daylight" rather than measured values. The mapping is linear and
 monotonic, which is what the slider needs.
 
-`0x00F4` and `0x00F7` are still unknown, holding `0x42` and `0x01` throughout.
-They are echoed from a state read rather than hardcoded, since a command is
-ignored without them. `LightState.companions` carries them, excluded from
-equality since they are not part of what a user means by the light's state.
+Watching the app's sleep mode resolved the last two:
+
+| Field | Observed |
+| --- | --- |
+| `0x00F4` | `0x42` -> `0x43` on sleep mode, back on leaving it |
+| `0x00F7` | `0x32`, `0x01`, `0x64` across sleep mode's own brightness slider |
+
+So the light has two modes with separate brightness settings, sleep dimming
+below what the normal range allows. Every field in the light group is now
+accounted for, and the mechanism that echoed unknown fields back untouched has
+been removed along with `LightState.companions` — a command can be built
+entirely from a known state.
+
+Sleep mode is exposed as the light's effect (`Normal`/`Sleep`) rather than as a
+separate entity or switch, since it is a mode of one light, and the brightness
+slider then addresses whichever mode is active. Both brightness values travel
+in every command so that switching modes does not discard the other.
 
 The Panasonic app's own packets were never observed. The cloud's control log
 carries only the requesting client's commands, so `watch_controls.py` shows our

@@ -68,9 +68,17 @@ async def run(args: argparse.Namespace) -> int:
                 before.light.brightness if before.light else const.MAX_BRIGHTNESS
             )
 
-        companions = before.light.companions if before.light else ()
+        current = before.light
         state = types_.LightState(
-            is_on=args.on, brightness=brightness, companions=companions
+            is_on=args.on,
+            brightness=brightness,
+            color_temp=current.color_temp if current else 0,
+            sleep=args.sleep if args.sleep is not None else bool(current and current.sleep),
+            sleep_brightness=(
+                args.sleep_brightness
+                if args.sleep_brightness is not None
+                else (current.sleep_brightness if current else 1)
+            ),
         )
         command = api.make_light_command_packet(state)
         print(f"\n  sending      : {state}")
@@ -118,6 +126,21 @@ def main() -> int:
         type=int,
         help=f"{const.MIN_BRIGHTNESS}-{const.MAX_BRIGHTNESS} percent "
         "(default: leave as it is)",
+    )
+    sleep = parser.add_mutually_exclusive_group()
+    sleep.add_argument(
+        "--sleep", dest="sleep", action="store_true", default=None,
+        help="switch to sleep mode",
+    )
+    sleep.add_argument(
+        "--no-sleep", dest="sleep", action="store_false", default=None,
+        help="switch to normal mode",
+    )
+    parser.add_argument(
+        "--sleep-brightness",
+        type=int,
+        help=f"sleep mode brightness, {const.MIN_BRIGHTNESS}-{const.MAX_BRIGHTNESS} "
+        "percent (default: leave as it is)",
     )
     args = parser.parse_args()
     args.on = not args.off

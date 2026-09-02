@@ -97,14 +97,18 @@ MAX_COLOR_TEMP = 100
 WARM_KELVIN = 2700
 DAYLIGHT_KELVIN = 6500
 
-# The device ignores a light command that carries only power and brightness -
-# it acknowledges it with a beep and does nothing. The whole light group has to
-# be present, in this order: 0x00F3, 0x00F4, 0x00F5, 0x00F6, 0x00F7.
-#
-# 0x00F4 and 0x00F7 have held 0x42 and 0x01 on every device seen so far, but
-# their meaning is unknown, so they are echoed back as read rather than
-# assumed constant.
-ID_UNKNOWN_F4 = 0x00F4
-ID_UNKNOWN_F7 = 0x00F7
+# The device ignores a light command unless the whole light group is present,
+# in this order: 0x00F3, 0x00F4, 0x00F5, 0x00F6, 0x00F7. Power and brightness
+# alone are acknowledged with a beep and discarded.
 
-LIGHT_COMPANION_IDS: tuple[int, ...] = (ID_UNKNOWN_F4, ID_UNKNOWN_F7)
+# Light mode. Sleep mode dims further than the normal range allows and keeps
+# its own brightness in 0x00F7. Watched flipping 0x42 -> 0x43 as sleep mode was
+# switched on in the app.
+ID_LIGHT_MODE = 0x00F4
+LIGHT_MODE_NORMAL = 0x42
+LIGHT_MODE_SLEEP = 0x43
+
+# Sleep mode's own brightness, a percentage like the others. Watched taking
+# 0x32, 0x01 and 0x64 as the app's sleep brightness was moved, and returning
+# to 0x01 when sleep mode was switched off.
+ID_LIGHT_SLEEP_BRIGHTNESS = 0x00F7

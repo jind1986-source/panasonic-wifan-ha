@@ -15,8 +15,10 @@ from typing import Any
 from homeassistant.components.light import (
     ATTR_BRIGHTNESS,
     ATTR_COLOR_TEMP_KELVIN,
+    ATTR_EFFECT,
     ColorMode,
     LightEntity,
+    LightEntityFeature,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -37,6 +39,12 @@ from .types import Fan, LightState
 _LOGGER = logging.getLogger(__name__)
 
 SCAN_INTERVAL = timedelta(minutes=5)
+
+# The light's two modes, exposed as effects. Sleep mode dims further than the
+# normal range allows and keeps its own brightness, so it reads as a mode of
+# the one light rather than as a separate entity.
+EFFECT_NORMAL = "Normal"
+EFFECT_SLEEP = "Sleep"
 
 
 async def async_setup_entry(
@@ -129,6 +137,8 @@ class PanasonicWiFiLight(LightEntity):  # type: ignore[misc]
     _attr_supported_color_modes = {ColorMode.COLOR_TEMP}
     _attr_min_color_temp_kelvin = WARM_KELVIN
     _attr_max_color_temp_kelvin = DAYLIGHT_KELVIN
+    _attr_supported_features = LightEntityFeature.EFFECT
+    _attr_effect_list = [EFFECT_NORMAL, EFFECT_SLEEP]
     _attr_has_entity_name = True
     _attr_name = "Light"
 
@@ -138,10 +148,7 @@ class PanasonicWiFiLight(LightEntity):  # type: ignore[misc]
         self._fan = fan
         self._attr_unique_id = f"{fan.unique_id}_light"
 
-        self._current_state = state
-        self._attr_is_on = state.is_on
-        self._attr_brightness = to_ha_brightness(state.brightness)
-        self._attr_color_temp_kelvin = to_kelvin(state.color_temp)
+        self._apply(state)
 
         # Same identifiers as the fan, so both entities sit on one device.
         self._attr_device_info = {
@@ -152,51 +159,74 @@ class PanasonicWiFiLight(LightEntity):  # type: ignore[misc]
             "serial_number": self._fan.serial_number,
         }
 
+    def _apply(self, state: LightState) -> None:
+        """Mirror a light state onto the entity's attributes."""
+        self._current_state = state
+        self._attr_is_on = state.is_on
+        self._attr_brightness = to_ha_brightness(state.active_brightness)
+        self._attr_color_temp_kelvin = to_kelvin(state.color_temp)
+        self._attr_effect = EFFECT_SLEEP if state.sleep else EFFECT_NORMAL
+
     async def async_turn_on(self, **kwargs: Any) -> None:
-        """Turn the light on, optionally at a brightness or colour temperature."""
-        brightness = kwargs.get(ATTR_BRIGHTNESS, self._attr_brightness or 255)
-        kelvin = kwargs.get(ATTR_COLOR_TEMP_KELVIN)
-        color_temp = (
-            to_device_color_temp(kelvin)
-            if kelvin is not None
-            else self._current_state.color_temp
+        """Turn the light on, with brightness, colour temperature or mode."""
+        current = self._current_state
+
+        sleep = current.sleep
+        if (effect := kwargs.get(ATTR_EFFECT)) is not None:
+            sleep = effect == EFFECT_SLEEP
+
+        color_temp = current.color_temp
+        if (kelvin := kwargs.get(ATTR_COLOR_TEMP_KELVIN)) is not None:
+            color_temp = to_device_color_temp(kelvin)
+
+        # Brightness belongs to whichever mode is active; the other mode keeps
+        # the value the device is holding for it.
+        brightness = current.brightness
+        sleep_brightness = current.sleep_brightness
+        if (requested := kwargs.get(ATTR_BRIGHTNESS)) is not None:
+            if sleep:
+                sleep_brightness = to_device_brightness(requested)
+            else:
+                brightness = to_device_brightness(requested)
+
+        await self._push(
+            LightState(
+                is_on=True,
+                brightness=brightness,
+                color_temp=color_temp,
+                sleep=sleep,
+                sleep_brightness=sleep_brightness,
+            )
         )
-        await self._push_state(True, to_device_brightness(brightness), color_temp)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        """Turn the light off."""
-        await self._push_state(
-            False, self._current_state.brightness, self._current_state.color_temp
+        """Turn the light off, leaving its settings as they are."""
+        current = self._current_state
+        await self._push(
+            LightState(
+                is_on=False,
+                brightness=current.brightness,
+                color_temp=current.color_temp,
+                sleep=current.sleep,
+                sleep_brightness=current.sleep_brightness,
+            )
         )
 
-    async def _push_state(
-        self, is_on: bool, brightness: int, color_temp: int
-    ) -> None:
-        """Send a light command and update the optimistic state.
-
-        The companion fields come from the last state read: the device ignores
-        a light command that does not carry them.
-        """
-        state = LightState(
-            is_on=is_on,
-            brightness=brightness,
-            color_temp=color_temp,
-            companions=self._current_state.companions,
-        )
-
+    async def _push(self, state: LightState) -> None:
+        """Send a light command and update the optimistic state."""
         _LOGGER.debug(
-            "Pushing light state for %s: is_on=%s, brightness=%s, color_temp=%s",
+            "Pushing light state for %s: is_on=%s, brightness=%s, "
+            "color_temp=%s, sleep=%s, sleep_brightness=%s",
             self._fan.name,
             state.is_on,
             state.brightness,
             state.color_temp,
+            state.sleep,
+            state.sleep_brightness,
         )
         await self._api.set_light_state(self._fan, state)
 
-        self._current_state = state
-        self._attr_is_on = state.is_on
-        self._attr_brightness = to_ha_brightness(state.brightness)
-        self._attr_color_temp_kelvin = to_kelvin(state.color_temp)
+        self._apply(state)
         self.async_write_ha_state()
 
     async def async_update(self) -> None:
@@ -211,15 +241,13 @@ class PanasonicWiFiLight(LightEntity):  # type: ignore[misc]
             _LOGGER.debug("%s stopped reporting light state", self._fan.name)
             return
 
-        self._current_state = state.light
-        self._attr_is_on = state.light.is_on
-        self._attr_brightness = to_ha_brightness(state.light.brightness)
-        self._attr_color_temp_kelvin = to_kelvin(state.light.color_temp)
+        self._apply(state.light)
 
         _LOGGER.debug(
-            "Updated %s light: is_on=%s, brightness=%s, color_temp=%sK",
+            "Updated %s light: is_on=%s, brightness=%s, color_temp=%sK, mode=%s",
             self._fan.name,
             state.light.is_on,
             self._attr_brightness,
             self._attr_color_temp_kelvin,
+            self._attr_effect,
         )
