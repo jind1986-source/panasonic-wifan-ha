@@ -109,17 +109,24 @@ async def run(args: argparse.Namespace) -> int:
         if after.light is None:
             print("\n  The device stopped reporting light state.")
             return 1
-        if after.light.is_on != state.is_on:
-            print("\n  The light did not switch. The command was not accepted.")
-            return 1
-        if state.is_on and after.light.brightness != state.brightness:
-            print(
-                f"\n  Switched, but brightness came back as "
-                f"{after.light.brightness} rather than {state.brightness}."
-            )
+
+        # Compare every field, not just power: a device that stores a value
+        # without acting on it looks identical to one that applied it, and a
+        # value it rejects outright comes back changed.
+        differences = [
+            (name, getattr(state, name), getattr(after.light, name))
+            for name in ("is_on", "brightness", "color_temp", "sleep", "sleep_brightness")
+            if getattr(state, name) != getattr(after.light, name)
+        ]
+
+        if differences:
+            print("\n  The device did not take the command as sent:")
+            for name, asked, got in differences:
+                print(f"    {name}: asked {asked}, reports {got}")
             return 1
 
-        print("\n  Accepted: the device reports the state that was asked for.")
+        print("\n  The device reports every value that was asked for.")
+        print("  That is not proof the light acted on them - check the light itself.")
         if before.fan != after.fan:
             print("  Note: the fan state also changed, which it should not have.")
             return 1
