@@ -102,14 +102,25 @@ and nothing else — sending `0x3C` leaves it on its previous value, reported
 back unchanged. So it has three steps where every other percentage field has a
 hundred.
 
-In Home Assistant, sleep mode appears as the light's **effect**: `Normal` or
-`Sleep`. The brightness slider applies to whichever mode is selected, and in
-sleep mode it snaps to the nearest of the three steps.
+In Home Assistant the two modes are one brightness slider. Sleep mode dims
+further than normal mode allows, so its three steps sit below normal mode's
+hundred levels on a single scale:
 
-It is also exposed as a separate **switch**, `Light sleep mode`. That is
-deliberate duplication: HomeKit's lightbulb service has no notion of a light
-effect, so a bridged light cannot carry sleep mode to Apple Home at all. A
-switch is the only shape that crosses that bridge.
+| Slider | Mode |
+| --- | --- |
+| 0-2% | sleep mode, its three steps |
+| 3-100% | normal mode, 1-100% |
+
+Dragging into the bottom of the slider switches the light into sleep mode, and
+dragging out of it returns to normal. Each mode keeps its own brightness, so
+moving between them does not lose the other's setting. That means one control
+works everywhere, including in Apple Home, where a bridged light has a
+brightness slider but no way to represent a mode.
+
+Sleep mode is also exposed as the light's **effect** (`Normal`/`Sleep`) and as
+a **switch**, `Light sleep mode`, for explicitly setting the mode without
+touching brightness — useful in automations, and the switch is the only shape
+HomeKit can carry, since its lightbulb service has no notion of an effect.
 
 The three entities of one appliance refresh on the same schedule, so a state
 read is cached briefly and shared between them rather than each polling the
