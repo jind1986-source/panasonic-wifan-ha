@@ -108,7 +108,9 @@ ID_LIGHT_MODE = 0x00F4
 LIGHT_MODE_NORMAL = 0x42
 LIGHT_MODE_SLEEP = 0x43
 
-# Sleep mode's own brightness, a percentage like the others. Watched taking
-# 0x32, 0x01 and 0x64 as the app's sleep brightness was moved, and returning
-# to 0x01 when sleep mode was switched off.
+# Sleep mode's own brightness. Unlike the other percentages this takes three
+# fixed steps, not a range: the app was watched moving it between 0x01, 0x32
+# and 0x64 and nothing else, and the device rejects a value outside that set -
+# sending 0x3C left it on its previous value.
 ID_LIGHT_SLEEP_BRIGHTNESS = 0x00F7
+SLEEP_BRIGHTNESS_STEPS: tuple[int, ...] = (1, 50, 100)

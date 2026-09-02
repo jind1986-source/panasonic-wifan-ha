@@ -118,7 +118,7 @@ Watching the app's sleep mode resolved the last two:
 | Field | Observed |
 | --- | --- |
 | `0x00F4` | `0x42` -> `0x43` on sleep mode, back on leaving it |
-| `0x00F7` | `0x32`, `0x01`, `0x64` across sleep mode's own brightness slider |
+| `0x00F7` | `0x32`, `0x01`, `0x64` across sleep mode's own brightness control |
 
 So the light has two modes with separate brightness settings, sleep dimming
 below what the normal range allows. Every field in the light group is now
@@ -126,10 +126,19 @@ accounted for, and the mechanism that echoed unknown fields back untouched has
 been removed along with `LightState.companions` — a command can be built
 entirely from a known state.
 
+`0x00F7` takes three fixed steps rather than a range, which only became clear
+after the first attempt shipped. Writing `0x3C` to it was reported as accepted
+and read back as the previous value: the device ignores anything that is not
+`0x01`, `0x32` or `0x64`. Watching the app confirmed it only ever uses those
+three. The read-back had looked like confirmation because the verification
+compared power and normal brightness alone; it now compares every field, and
+says explicitly that an echoed value is not proof the light acted.
+
 Sleep mode is exposed as the light's effect (`Normal`/`Sleep`) rather than as a
-separate entity or switch, since it is a mode of one light, and the brightness
-slider then addresses whichever mode is active. Both brightness values travel
-in every command so that switching modes does not discard the other.
+separate entity or switch, since it is a mode of one light. The brightness
+slider addresses whichever mode is active, snapping to the nearest step in
+sleep mode. Both brightness values travel in every command so that switching
+modes does not discard the other.
 
 The Panasonic app's own packets were never observed. The cloud's control log
 carries only the requesting client's commands, so `watch_controls.py` shows our

@@ -62,7 +62,7 @@ Fields seen so far:
 | `0x00F5` | Light brightness, percentage byte (`0x64` = 100%) |
 | `0x00F6` | Light colour temperature, `0x00` warm to `0x64` daylight |
 | `0x00F4` | Light mode, `0x42` normal and `0x43` sleep |
-| `0x00F7` | Sleep mode brightness, percentage byte |
+| `0x00F7` | Sleep mode brightness — three fixed steps only: 1, 50, 100 |
 | `0x0081`, `0x0082`, `0x008A` | Unmapped |
 | `0x008C` | Model name in ASCII, e.g. `F-M12GC` |
 | `0x009D`, `0x009E`, `0x009F` | Tables, not decoded |
@@ -97,8 +97,14 @@ The fitting has white balance only — no colour — so the entity declares
 warm-to-cool gradient, which is a temperature slider rather than a colour
 picker.
 
+Sleep brightness is not a range. The device takes `0x01`, `0x32` and `0x64`
+and nothing else — sending `0x3C` leaves it on its previous value, reported
+back unchanged. So it has three steps where every other percentage field has a
+hundred.
+
 In Home Assistant, sleep mode appears as the light's **effect**: `Normal` or
-`Sleep`. The brightness slider then applies to whichever mode is selected.
+`Sleep`. The brightness slider applies to whichever mode is selected, and in
+sleep mode it snaps to the nearest of the three steps.
 
 Both were found by polling every field on an F-M12GC while operating the light
 in the Panasonic app, with a deliberate fan speed change in the same run as a

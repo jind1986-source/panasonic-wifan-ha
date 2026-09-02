@@ -24,6 +24,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from .api import nearest_sleep_step
 from .const import (
     DAYLIGHT_KELVIN,
     DOMAIN,
@@ -185,7 +186,11 @@ class PanasonicWiFiLight(LightEntity):  # type: ignore[misc]
         sleep_brightness = current.sleep_brightness
         if (requested := kwargs.get(ATTR_BRIGHTNESS)) is not None:
             if sleep:
-                sleep_brightness = to_device_brightness(requested)
+                # Sleep mode has three fixed steps, so a slider value has to
+                # be snapped to the nearest; the device ignores anything else.
+                sleep_brightness = nearest_sleep_step(
+                    to_device_brightness(requested)
+                )
             else:
                 brightness = to_device_brightness(requested)
 

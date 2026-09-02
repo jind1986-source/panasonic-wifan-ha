@@ -111,7 +111,7 @@ def test_the_light_offers_normal_and_sleep_as_effects():
 
 def test_selecting_sleep_switches_the_mode():
     entity, api = make_entity(
-        LightState(is_on=True, brightness=58, sleep=False, sleep_brightness=5)
+        LightState(is_on=True, brightness=58, sleep=False, sleep_brightness=50)
     )
     asyncio.run(entity.async_turn_on(effect="Sleep"))
     assert api.sent[0].sleep is True
@@ -120,41 +120,55 @@ def test_selecting_sleep_switches_the_mode():
 
 def test_a_sleeping_light_reports_its_sleep_brightness():
     entity, _ = make_entity(
-        LightState(is_on=True, brightness=100, sleep=True, sleep_brightness=5)
+        LightState(is_on=True, brightness=100, sleep=True, sleep_brightness=50)
     )
-    assert entity.brightness == light.to_ha_brightness(5)
+    assert entity.brightness == light.to_ha_brightness(50)
 
 
-def test_brightness_in_sleep_mode_changes_the_sleep_brightness():
-    """Sleep mode has its own dimmer, below the normal range."""
+def test_brightness_in_sleep_mode_snaps_to_a_step():
+    """Sleep mode takes three fixed steps; anything else the device ignores."""
     entity, api = make_entity(
-        LightState(is_on=True, brightness=80, sleep=True, sleep_brightness=50)
+        LightState(is_on=True, brightness=80, sleep=True, sleep_brightness=100)
     )
     asyncio.run(entity.async_turn_on(brightness=light.to_ha_brightness(10)))
-    assert api.sent[0].sleep_brightness == 10
+    assert api.sent[0].sleep_brightness == 1
     assert api.sent[0].brightness == 80  # the normal setting is untouched
+
+
+@pytest.mark.parametrize(
+    "percent,expected", [(1, 1), (20, 1), (40, 50), (60, 50), (90, 100), (100, 100)]
+)
+def test_every_slider_position_lands_on_a_step(percent, expected):
+    entity, api = make_entity(
+        LightState(is_on=True, brightness=80, sleep=True, sleep_brightness=1)
+    )
+    asyncio.run(
+        entity.async_turn_on(brightness=light.to_ha_brightness(percent))
+    )
+    assert api.sent[0].sleep_brightness == expected
 
 
 def test_brightness_in_normal_mode_leaves_the_sleep_brightness_alone():
     entity, api = make_entity(
-        LightState(is_on=True, brightness=80, sleep=False, sleep_brightness=5)
+        LightState(is_on=True, brightness=80, sleep=False, sleep_brightness=50)
     )
     asyncio.run(entity.async_turn_on(brightness=light.to_ha_brightness(30)))
     assert api.sent[0].brightness == 30
-    assert api.sent[0].sleep_brightness == 5
+    assert api.sent[0].sleep_brightness == 50
 
 
 def test_turning_off_keeps_every_setting():
     entity, api = make_entity(
         LightState(
-            is_on=True, brightness=80, color_temp=32, sleep=True, sleep_brightness=5
+            is_on=True, brightness=80, color_temp=32, sleep=True,
+            sleep_brightness=50,
         )
     )
     asyncio.run(entity.async_turn_off())
     sent = api.sent[0]
     assert sent.is_on is False
     assert (sent.brightness, sent.color_temp, sent.sleep, sent.sleep_brightness) == (
-        80, 32, True, 5
+        80, 32, True, 50
     )
 
 

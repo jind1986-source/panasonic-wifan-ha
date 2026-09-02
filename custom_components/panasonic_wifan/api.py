@@ -20,6 +20,7 @@ from .const import (
     ID_LIGHT_POWER,
     LIGHT_MODE_NORMAL,
     LIGHT_MODE_SLEEP,
+    SLEEP_BRIGHTNESS_STEPS,
     ID_OFF_TIMER,
     ID_POWER,
     ID_SPEED,
@@ -427,14 +428,16 @@ def make_light_command_packet(state: LightState) -> str:
             "run scripts/sweep_ids.py to discover them"
         )
 
-    for name, value in (
-        ("Brightness", state.brightness),
-        ("Sleep brightness", state.sleep_brightness),
-    ):
-        if value < MIN_BRIGHTNESS or value > MAX_BRIGHTNESS:
-            raise ValueError(
-                f"{name} must be between {MIN_BRIGHTNESS} and {MAX_BRIGHTNESS}"
-            )
+    if state.brightness < MIN_BRIGHTNESS or state.brightness > MAX_BRIGHTNESS:
+        raise ValueError(
+            f"Brightness must be between {MIN_BRIGHTNESS} and {MAX_BRIGHTNESS}"
+        )
+    if state.sleep_brightness not in SLEEP_BRIGHTNESS_STEPS:
+        # The device silently keeps its previous value for anything else.
+        raise ValueError(
+            "Sleep brightness must be one of "
+            f"{', '.join(str(s) for s in SLEEP_BRIGHTNESS_STEPS)}"
+        )
     if state.color_temp < MIN_COLOR_TEMP or state.color_temp > MAX_COLOR_TEMP:
         raise ValueError(
             f"Colour temperature must be between {MIN_COLOR_TEMP} and "
@@ -513,6 +516,15 @@ def decode_get_state_packet(response: str) -> DeviceState:
     )
 
 
+def nearest_sleep_step(value: int) -> int:
+    """The sleep brightness step closest to a value.
+
+    The device takes only the steps and ignores anything else, so a value from
+    a continuous control has to be snapped to one of them.
+    """
+    return min(SLEEP_BRIGHTNESS_STEPS, key=lambda step: abs(step - value))
+
+
 def _decode_light(fields: dict[int, Field]) -> LightState | None:
     """Read light state, if this device reports any."""
     if ID_LIGHT_POWER is None:
@@ -534,9 +546,9 @@ def _decode_light(fields: dict[int, Field]) -> LightState | None:
     if field := fields.get(ID_LIGHT_MODE):
         sleep = field.byte == LIGHT_MODE_SLEEP
 
-    sleep_brightness = MIN_BRIGHTNESS
+    sleep_brightness = SLEEP_BRIGHTNESS_STEPS[0]
     if field := fields.get(ID_LIGHT_SLEEP_BRIGHTNESS):
-        sleep_brightness = min(MAX_BRIGHTNESS, max(MIN_BRIGHTNESS, field.byte))
+        sleep_brightness = nearest_sleep_step(field.byte)
 
     return LightState(
         is_on=power.low_nibble == POWER_ON,

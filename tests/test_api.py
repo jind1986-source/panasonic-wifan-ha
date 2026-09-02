@@ -150,11 +150,11 @@ def test_sleep_brightness_has_its_own_field():
 def test_both_brightnesses_are_sent_in_either_mode():
     """Switching modes must not discard the other mode's setting."""
     normal = LightState(
-        is_on=True, brightness=80, sleep=False, sleep_brightness=5
+        is_on=True, brightness=80, sleep=False, sleep_brightness=50
     )
     fields = packet.as_dict(packet.decode(api.make_light_command_packet(normal)))
     assert fields[0x00F5].value == bytes([80])
-    assert fields[0x00F7].value == bytes([5])
+    assert fields[0x00F7].value == bytes([50])
 
 
 @pytest.mark.parametrize("color_temp,expected", [(0, b"\x00"), (100, b"\x64"), (32, b"\x20")])
@@ -173,15 +173,32 @@ def test_light_command_rejects_out_of_range_colour_temperature(color_temp):
         )
 
 
-@pytest.mark.parametrize("sleep_brightness", [0, -1, 101, 255])
-def test_light_command_rejects_out_of_range_sleep_brightness(sleep_brightness):
-    with pytest.raises(ValueError, match="Sleep brightness must be"):
+@pytest.mark.parametrize("sleep_brightness", [0, -1, 60, 99, 101, 255])
+def test_light_command_rejects_a_sleep_brightness_off_the_steps(sleep_brightness):
+    """The device kept its previous value when sent 0x3C, so 60 is not valid."""
+    with pytest.raises(ValueError, match="Sleep brightness must be one of"):
         api.make_light_command_packet(
             LightState(
                 is_on=True, brightness=50, sleep=True,
                 sleep_brightness=sleep_brightness,
             )
         )
+
+
+@pytest.mark.parametrize("step", [1, 50, 100])
+def test_light_command_accepts_each_sleep_step(step):
+    """1, 50 and 100 are the values the app was watched using."""
+    state = LightState(is_on=True, brightness=50, sleep=True, sleep_brightness=step)
+    fields = packet.as_dict(packet.decode(api.make_light_command_packet(state)))
+    assert fields[0x00F7].value == bytes([step])
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [(1, 1), (10, 1), (25, 1), (26, 50), (60, 50), (75, 50), (76, 100), (100, 100)],
+)
+def test_a_value_off_the_steps_snaps_to_the_nearest(value, expected):
+    assert api.nearest_sleep_step(value) == expected
 
 
 def test_light_command_carries_the_same_header_as_a_fan_command():
