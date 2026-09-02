@@ -52,8 +52,8 @@ def test_out_of_range_speed_is_rejected(speed):
 
 def test_query_packet_asks_for_the_fan_and_light_fields():
     assert api.QUERY_PACKET == (
-        "0C00800000F00000F10000F20000F80000F90000FA0000FB00008600008800"
-        "00F30000F500"
+        "0F00800000F00000F10000F20000F80000F90000FA0000FB00008600008800"
+        "00F30000F50000F40000F60000F700"
     )
 
 
@@ -93,23 +93,64 @@ def test_decode_rejects_an_unknown_power_value():
         api.decode_get_state_packet(response)
 
 
-def test_light_command_turns_the_light_on_at_a_brightness():
-    command = api.make_light_command_packet(LightState(is_on=True, brightness=58))
-    fields = packet.as_dict(packet.decode(command))
-    assert fields[0x00F3].value == bytes([0x30])
-    assert fields[0x00F5].value == bytes([0x3A])
+# The companion values the Study fan reported when variant 4 worked.
+COMPANIONS = ((0x00F4, b"\x42"), (0x00F6, b"\x20"), (0x00F7, b"\x01"))
+
+# The exact packet that switched the physical light on.
+WORKING_COMMAND = (
+    "090093014200FD010400FC013000FE0140"
+    "00F3013000F4014200F5013A00F6012000F70101"
+)
 
 
-def test_light_off_command_omits_brightness():
-    command = api.make_light_command_packet(LightState(is_on=False, brightness=58))
-    fields = packet.as_dict(packet.decode(command))
-    assert fields[0x00F3].value == bytes([0x31])
-    assert 0x00F5 not in fields
+def test_light_command_matches_the_packet_that_worked():
+    """Recorded from a real F-M12GC: this packet switched the light on.
+
+    Power and brightness alone are acknowledged with a beep and discarded, so
+    the whole light group has to go out in this order.
+    """
+    state = LightState(is_on=True, brightness=58, companions=COMPANIONS)
+    assert api.make_light_command_packet(state) == WORKING_COMMAND
+
+
+def test_light_command_sends_the_whole_group_in_device_order():
+    state = LightState(is_on=True, brightness=58, companions=COMPANIONS)
+    ids = [f.id for f in packet.decode(api.make_light_command_packet(state))]
+    assert ids[-5:] == [0x00F3, 0x00F4, 0x00F5, 0x00F6, 0x00F7]
+
+
+def test_light_off_command_still_sends_the_whole_group():
+    state = LightState(is_on=False, brightness=58, companions=COMPANIONS)
+    fields = packet.as_dict(packet.decode(api.make_light_command_packet(state)))
+    assert fields[0x00F3].value == b"\x31"
+    for companion in (0x00F4, 0x00F5, 0x00F6, 0x00F7):
+        assert companion in fields
+
+
+def test_light_command_echoes_companions_as_read():
+    companions = ((0x00F4, b"\x42"), (0x00F6, b"\x29"), (0x00F7, b"\x01"))
+    state = LightState(is_on=True, brightness=100, companions=companions)
+    fields = packet.as_dict(packet.decode(api.make_light_command_packet(state)))
+    assert fields[0x00F6].value == b"\x29"
+    assert fields[0x00F5].value == bytes([100])
+
+
+def test_light_command_refuses_to_invent_companions():
+    """Their meaning is unknown, so a guessed value is not acceptable."""
+    with pytest.raises(ValueError, match="needs the device's own values"):
+        api.make_light_command_packet(LightState(is_on=True, brightness=50))
+
+
+def test_light_command_names_the_companions_it_lacks():
+    with pytest.raises(ValueError, match="0x00f6, 0x00f7"):
+        api.make_light_command_packet(
+            LightState(is_on=True, brightness=50, companions=((0x00F4, b"\x42"),))
+        )
 
 
 def test_light_command_carries_the_same_header_as_a_fan_command():
-    command = api.make_light_command_packet(LightState(is_on=True, brightness=100))
-    fields = packet.as_dict(packet.decode(command))
+    state = LightState(is_on=True, brightness=100, companions=COMPANIONS)
+    fields = packet.as_dict(packet.decode(api.make_light_command_packet(state)))
     assert fields[0x0093].value == bytes([0x42])
     assert fields[0x00FD].value == bytes([0x04])
     assert fields[0x00FC].value == bytes([0x30])
@@ -117,8 +158,8 @@ def test_light_command_carries_the_same_header_as_a_fan_command():
 
 
 def test_light_command_does_not_touch_the_fan_fields():
-    command = api.make_light_command_packet(LightState(is_on=True, brightness=100))
-    fields = packet.as_dict(packet.decode(command))
+    state = LightState(is_on=True, brightness=100, companions=COMPANIONS)
+    fields = packet.as_dict(packet.decode(api.make_light_command_packet(state)))
     for fan_field in (0x0080, 0x00F0, 0x00F1, 0x00F2):
         assert fan_field not in fields
 
@@ -179,4 +220,26 @@ def test_a_device_reporting_no_light_field_has_no_light():
 
 
 def test_light_ids_are_included_in_the_query():
-    assert api._query_ids()[-2:] == (0x00F3, 0x00F5)
+    ids = api._query_ids()
+    assert 0x00F3 in ids and 0x00F5 in ids
+    assert ids[-3:] == (0x00F4, 0x00F6, 0x00F7)
+
+
+def test_decoded_state_carries_the_companions_a_command_needs():
+    response = packet.encode(
+        [
+            packet.Field(id=0x0080, value=bytes([0x30])),
+            packet.Field(id=0x00F0, value=bytes([0x33])),
+            packet.Field(id=0x00F1, value=bytes([0x41])),
+            packet.Field(id=0x00F2, value=bytes([0x31])),
+            packet.Field(id=0x00F3, value=bytes([0x30])),
+            packet.Field(id=0x00F4, value=bytes([0x42])),
+            packet.Field(id=0x00F5, value=bytes([0x3A])),
+            packet.Field(id=0x00F6, value=bytes([0x20])),
+            packet.Field(id=0x00F7, value=bytes([0x01])),
+        ]
+    )
+    light = api.decode_get_state_packet(response).light
+    assert light.companions == COMPANIONS
+    # A command can be built straight from what was read.
+    assert api.make_light_command_packet(light) == WORKING_COMMAND

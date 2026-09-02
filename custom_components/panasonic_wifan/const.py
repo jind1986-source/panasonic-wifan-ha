@@ -83,10 +83,13 @@ ID_LIGHT_BRIGHTNESS: int | None = 0x00F5
 MIN_BRIGHTNESS = 1
 MAX_BRIGHTNESS = 100
 
-# Neighbouring fields that move with neither power, speed, direction, yuragi,
-# light power nor brightness. 0x00F4 carries 0x42, the shape the direction
-# field uses, and 0x00F6 carries a second percentage-looking byte — a colour
-# temperature setting would fit both. Left alone until observed changing.
+# The device ignores a light command that carries only power and brightness -
+# it acknowledges it with a beep and does nothing. The whole light group has to
+# be present, in this order: 0x00F3, 0x00F4, 0x00F5, 0x00F6, 0x00F7. What the
+# other three mean is unknown; 0x00F4 holds 0x42, and 0x00F6 has been seen at
+# 0x20 and 0x29, so they are echoed back as read rather than assumed constant.
 ID_UNKNOWN_F4 = 0x00F4
 ID_UNKNOWN_F6 = 0x00F6
 ID_UNKNOWN_F7 = 0x00F7
+
+LIGHT_COMPANION_IDS: tuple[int, ...] = (ID_UNKNOWN_F4, ID_UNKNOWN_F6, ID_UNKNOWN_F7)

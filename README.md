@@ -59,7 +59,7 @@ Fields seen so far:
 | `0x00F2` | Yuragi (`0x30` on, `0x31` off) |
 | `0x00F3` | Light power (`0x30` on, `0x31` off) |
 | `0x00F5` | Light brightness, percentage byte (`0x64` = 100%) |
-| `0x00F4`, `0x00F6`, `0x00F7` | Unmapped; `0x00F6` looks like a second percentage |
+| `0x00F4`, `0x00F6`, `0x00F7` | Unmapped, but a light command is ignored without them |
 | `0x0081`, `0x0082`, `0x008A` | Unmapped |
 | `0x008C` | Model name in ASCII, e.g. `F-M12GC` |
 | `0x009D`, `0x009E`, `0x009F` | Tables, not decoded |
@@ -73,6 +73,20 @@ Fields seen so far:
 The light is field `0x00F3` (`0x30` on, `0x31` off, the same convention as the
 fan's power) and its brightness is field `0x00F5`, a plain percentage byte
 rather than the `0x3X` digit encoding the fan settings use.
+
+A command carrying only those two is **acknowledged and discarded** — the fan
+beeps and the light does not move. The whole light group has to be present, in
+the order the device reports it:
+
+```
+0x00F3 power   0x00F4 ?   0x00F5 brightness   0x00F6 ?   0x00F7 ?
+```
+
+What the other three mean is unknown. `0x00F4` has only ever held `0x42`, but
+`0x00F6` has been seen at both `0x20` and `0x29`, so they are read from the
+device and echoed back rather than assumed constant. That is why `LightState`
+carries a `companions` field and why a command cannot be built without a state
+read behind it.
 
 Both were found by polling every field on an F-M12GC while operating the light
 in the Panasonic app, with a deliberate fan speed change in the same run as a

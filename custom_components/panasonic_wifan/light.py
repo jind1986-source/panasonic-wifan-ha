@@ -134,8 +134,16 @@ class PanasonicWiFiLight(LightEntity):  # type: ignore[misc]
         await self._push_state(False, self._current_state.brightness)
 
     async def _push_state(self, is_on: bool, brightness: int) -> None:
-        """Send a light command and update the optimistic state."""
-        state = LightState(is_on=is_on, brightness=brightness)
+        """Send a light command and update the optimistic state.
+
+        The companion fields come from the last state read: the device ignores
+        a light command that does not carry them.
+        """
+        state = LightState(
+            is_on=is_on,
+            brightness=brightness,
+            companions=self._current_state.companions,
+        )
 
         _LOGGER.debug(
             "Pushing light state for %s: is_on=%s, brightness=%s",

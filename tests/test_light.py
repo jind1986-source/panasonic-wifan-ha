@@ -118,3 +118,23 @@ def test_setup_survives_a_re_read_that_fails():
             raise RuntimeError("cloud unreachable")
 
     assert setup_light({}, api=Api()) == []
+
+
+def test_entity_sends_the_companions_it_last_read():
+    """Without them the device beeps and ignores the command."""
+    companions = ((0x00F4, b"\x42"), (0x00F6, b"\x20"), (0x00F7, b"\x01"))
+    sent = []
+
+    class Api:
+        async def set_light_state(self, fan, state):
+            sent.append(state)
+
+    entity = light.PanasonicWiFiLight(
+        Api(), FAN, LightState(is_on=False, brightness=58, companions=companions)
+    )
+    entity.hass = None
+    entity.async_write_ha_state = lambda: None
+
+    asyncio.run(entity.async_turn_on())
+    assert sent[0].companions == companions
+    assert sent[0].is_on is True

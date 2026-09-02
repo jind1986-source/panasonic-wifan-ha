@@ -90,8 +90,18 @@ why `MAX_BRIGHTNESS` is 100 rather than 10 and `make_light_command_packet`
 writes the byte whole.
 
 A command built by analogy with the fan's — the same four header fields, then
-`0x00F3` and `0x00F5`, touching no fan field — was accepted by the device and
-switched the physical light.
+`0x00F3` and `0x00F5` — was accepted by the cloud, and the fan beeped, but the
+light did not move. Reading state back showed the requested values, so the
+device stores the fields without acting on them.
+
+Walking candidate packet shapes settled it: the light only switches when the
+whole group `0x00F3`, `0x00F4`, `0x00F5`, `0x00F6`, `0x00F7` is present, in
+that order. Power and brightness alone are acknowledged and discarded.
+
+`0x00F4` and `0x00F7` have been constant so far (`0x42`, `0x01`) but `0x00F6`
+has been seen at `0x20` and `0x29`, so all three are echoed from a state read
+rather than hardcoded. `LightState.companions` carries them, excluded from
+equality since they are not part of what a user means by the light's state.
 
 The Panasonic app's own packets were never observed. The cloud's control log
 carries only the requesting client's commands, so `watch_controls.py` shows our

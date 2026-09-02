@@ -18,11 +18,15 @@ from .const import (
     DIRECTION_REVERSE_LOW,
     ID_LIGHT_BRIGHTNESS,
     ID_LIGHT_POWER,
+    LIGHT_COMPANION_IDS,
     ID_OFF_TIMER,
     ID_POWER,
     ID_SPEED,
     ID_TIMER,
     ID_DIRECTION,
+    ID_UNKNOWN_F4,
+    ID_UNKNOWN_F6,
+    ID_UNKNOWN_F7,
     ID_YURAGI,
     MAX_BRIGHTNESS,
     MAX_SPEED,
@@ -55,9 +59,14 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def _query_ids() -> tuple[int, ...]:
-    """Field ids to poll, including the light's if they are known."""
+    """Field ids to poll, including the light group if its ids are known."""
     ids = list(QUERY_IDS)
-    ids.extend(i for i in (ID_LIGHT_POWER, ID_LIGHT_BRIGHTNESS) if i is not None)
+    if ID_LIGHT_POWER is not None:
+        ids.append(ID_LIGHT_POWER)
+    if ID_LIGHT_BRIGHTNESS is not None:
+        ids.append(ID_LIGHT_BRIGHTNESS)
+    # Polled because a light command has to send them back.
+    ids.extend(LIGHT_COMPANION_IDS)
     return tuple(ids)
 
 
@@ -86,6 +95,25 @@ class ApiClient:
         data = await self._request("GET", f"{BASE_URL}/devices")
         return [Fan.from_api(item) for item in data.get("devices", [])]
 
+    async def _completed_markers(self, fans: list[Fan]) -> dict[str, str]:
+        """The newest reply already logged for each appliance.
+
+        A poll must not accept a reply that completed before its own request,
+        or a state change made moments earlier is read back as the old state.
+        """
+        data = await self._request("GET", DEVICE_CONTROLS_URL)
+
+        markers = {fan.unique_id: "" for fan in fans}
+        for control in _controls(data):
+            if control.get("method") != GET:
+                continue
+            appliance = control.get("appliance_id")
+            if appliance in markers:
+                markers[appliance] = max(
+                    markers[appliance], control.get("completed_at", "")
+                )
+        return markers
+
     async def get_state_for_fans(
         self,
         fans: list[Fan],
@@ -105,6 +133,7 @@ class ApiClient:
             delay = SLEEP_AFTER_QUERY
 
         fans_by_id = {fan.unique_id: fan for fan in fans}
+        markers = await self._completed_markers(fans)
 
         for fan in fans:
             await self.request_fields(fan, _query_ids())
@@ -150,6 +179,10 @@ class ApiClient:
                 if (fan := fans_by_id.get(control.get("appliance_id"))) is None:
                     continue
                 if fan.unique_id in device_states:
+                    continue
+                if control.get("completed_at", "") <= markers[fan.unique_id]:
+                    # Logged before this poll asked, so it may predate a change
+                    # made moments ago.
                     continue
 
                 state = decode_get_state_packet(control["packet"])
@@ -273,6 +306,17 @@ class ApiClient:
         await self._post_device_controls(fan, SET, make_command_packet(state))
 
     async def set_light_state(self, fan: Fan, state: LightState):
+        """Send a light command, reading the companion fields if needed."""
+        if not state.companions:
+            current = await self.get_state_for_fan(fan)
+            if current.light is None:
+                raise RuntimeError(f"{fan.name} reports no light")
+            state = LightState(
+                is_on=state.is_on,
+                brightness=state.brightness,
+                companions=current.light.companions,
+            )
+
         await self._post_device_controls(fan, SET, make_light_command_packet(state))
 
     async def _post_device_controls(
@@ -350,8 +394,10 @@ def make_command_packet(state: FanState) -> str:
 def make_light_command_packet(state: LightState) -> str:
     """Build a SET packet for the light.
 
-    Raises RuntimeError until the light's field ids are known; see
-    ID_LIGHT_POWER in const.py.
+    The device ignores a command carrying only power and brightness — it beeps
+    and does nothing — so the whole light group goes out in the order the
+    device reports it: power, 0x00F4, brightness, 0x00F6, 0x00F7. The three
+    unexplained fields come from `state.companions`, read from the device.
     """
     if ID_LIGHT_POWER is None or ID_LIGHT_BRIGHTNESS is None:
         raise RuntimeError(
@@ -363,16 +409,24 @@ def make_light_command_packet(state: LightState) -> str:
             f"Brightness must be between {MIN_BRIGHTNESS} and {MAX_BRIGHTNESS}"
         )
 
+    companions = dict(state.companions)
+    missing = [f"{i:#06x}" for i in LIGHT_COMPANION_IDS if i not in companions]
+    if missing:
+        raise ValueError(
+            "A light command needs the device's own values for "
+            f"{', '.join(missing)}; read the state first"
+        )
+
     fields = _header_fields()
     fields.append(
         _digit_field(ID_LIGHT_POWER, POWER_ON if state.is_on else POWER_OFF)
     )
-    if state.is_on:
-        # Brightness is a percentage byte, so it is written whole rather than
-        # through the nibble encoding the fan settings use.
-        fields.append(
-            Field(id=ID_LIGHT_BRIGHTNESS, value=bytes([state.brightness]))
-        )
+    fields.append(Field(id=ID_UNKNOWN_F4, value=companions[ID_UNKNOWN_F4]))
+    # Brightness is a percentage byte, so it is written whole rather than
+    # through the nibble encoding the fan settings use.
+    fields.append(Field(id=ID_LIGHT_BRIGHTNESS, value=bytes([state.brightness])))
+    fields.append(Field(id=ID_UNKNOWN_F6, value=companions[ID_UNKNOWN_F6]))
+    fields.append(Field(id=ID_UNKNOWN_F7, value=companions[ID_UNKNOWN_F7]))
 
     return packet.encode(fields)
 
@@ -441,4 +495,14 @@ def _decode_light(fields: dict[int, Field]) -> LightState | None:
     ):
         brightness = min(MAX_BRIGHTNESS, max(MIN_BRIGHTNESS, field.byte))
 
-    return LightState(is_on=power.low_nibble == POWER_ON, brightness=brightness)
+    companions = tuple(
+        (field_id, fields[field_id].value)
+        for field_id in LIGHT_COMPANION_IDS
+        if field_id in fields
+    )
+
+    return LightState(
+        is_on=power.low_nibble == POWER_ON,
+        brightness=brightness,
+        companions=companions,
+    )

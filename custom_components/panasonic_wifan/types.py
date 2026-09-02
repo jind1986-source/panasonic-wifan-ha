@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime as dt
 from typing import NewType
 
@@ -68,10 +68,18 @@ class FanState:
 
 @dataclass(frozen=True)
 class LightState:
-    """State of the light fitted to a fan, when it has one."""
+    """State of the light fitted to a fan, when it has one.
+
+    ``companions`` holds the neighbouring light fields exactly as the device
+    reported them. A light command is ignored unless they are sent back with
+    it, and their meaning is unknown, so they are carried around rather than
+    interpreted. They are excluded from equality: two states with the same
+    power and brightness are the same state.
+    """
 
     is_on: bool
     brightness: int
+    companions: tuple[tuple[int, bytes], ...] = field(default=(), compare=False)
 
 
 @dataclass(frozen=True)
