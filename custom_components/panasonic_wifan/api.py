@@ -283,12 +283,19 @@ class ApiClient:
         *,
         attempts: int = 5,
         delay: float | None = None,
+        require_ids: bool = False,
     ) -> dict | None:
         """Ask a device for arbitrary fields and return the raw control record.
 
         Used by the field discovery scripts. Returns None if no fresh response
         arrives, and the record itself — including a failed ``result`` — when
         the device rejects the query.
+
+        Anything else polling the same appliance — Home Assistant itself, or
+        another script — puts its own replies in the same log, and those answer
+        a different set of fields. With ``require_ids`` a reply is only accepted
+        if it carries every field that was asked for, which keeps another
+        poller's answer from being read as this one's.
         """
         if delay is None:
             delay = SLEEP_AFTER_QUERY
@@ -298,11 +305,20 @@ class ApiClient:
 
         await self._post_device_controls(fan, GET, packet.query(ids))
 
+        wanted = set(ids)
+
         for _ in range(attempts):
             await asyncio.sleep(delay)
             control = await self._latest_control(fan)
-            if control and control.get("completed_at", "") > since:
-                return control
+            if not control or control.get("completed_at", "") <= since:
+                continue
+            if require_ids and not _answers(control, wanted):
+                # Someone else's reply, logged in the same place.
+                _LOGGER.debug(
+                    "Ignoring a reply that does not cover the fields asked for"
+                )
+                continue
+            return control
 
         return None
 
@@ -325,6 +341,18 @@ class ApiClient:
             },
         )
         _LOGGER.debug("deviceControls response: %s", data)
+
+
+def _answers(control: dict, wanted: set[int]) -> bool:
+    """Whether a reply carries every field that was asked for."""
+    if control.get("result") != "success_response":
+        # A rejection is about the query that was sent, so it does belong to it.
+        return True
+    try:
+        present = {field.id for field in packet.decode(control.get("packet") or "")}
+    except PacketError:
+        return False
+    return wanted.issubset(present)
 
 
 def _controls(data) -> list[dict]:

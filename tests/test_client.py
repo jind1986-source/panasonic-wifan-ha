@@ -179,3 +179,38 @@ def test_markers_are_per_appliance():
     )
     states = asyncio.run(client.get_state_for_fans([FAN], attempts=1, delay=0))
     assert FAN.unique_id in states
+
+
+def test_query_raw_ignores_a_reply_that_answers_a_different_query():
+    """Home Assistant polls the same fans, and its replies share this log."""
+    other = control("20260202000000+0000", packet="020080013000F00135")
+    client = make_client([None, {"accepted": True}, {"controls": [other]}])
+    found = asyncio.run(
+        client.query_raw(
+            FAN, [0x0080, 0x00F0, 0x00F3], attempts=1, delay=0, require_ids=True
+        )
+    )
+    assert found is None
+
+
+def test_query_raw_accepts_a_reply_that_covers_the_query():
+    full = control(
+        "20260202000000+0000", packet="030080013000F0013500F30131"
+    )
+    client = make_client([None, {"accepted": True}, {"controls": [full]}])
+    found = asyncio.run(
+        client.query_raw(
+            FAN, [0x0080, 0x00F0, 0x00F3], attempts=1, delay=0, require_ids=True
+        )
+    )
+    assert found is not None
+
+
+def test_query_raw_still_reports_a_rejection():
+    """A rejection answers the query that was sent, so it is not someone else's."""
+    rejected = control("20260202000000+0000", result="error_response", packet="")
+    client = make_client([None, {"accepted": True}, {"controls": [rejected]}])
+    found = asyncio.run(
+        client.query_raw(FAN, [0x0081], attempts=1, delay=0, require_ids=True)
+    )
+    assert found["result"] == "error_response"

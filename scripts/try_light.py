@@ -84,7 +84,23 @@ async def run(args: argparse.Namespace) -> int:
         print(f"\n  sending      : {state}")
         print(f"  packet       : {command}")
 
-        await client.set_light_state(fan, state)
+        if args.two_step:
+            # The mode switch appears to reset the sleep brightness, so try
+            # setting the mode first and the brightness in a second command.
+            mode_only = types_.LightState(
+                is_on=state.is_on,
+                brightness=state.brightness,
+                color_temp=state.color_temp,
+                sleep=state.sleep,
+                sleep_brightness=current.sleep_brightness if current else 1,
+            )
+            print(f"  step 1       : {api.make_light_command_packet(mode_only)}")
+            await client.set_light_state(fan, mode_only)
+            await asyncio.sleep(args.gap)
+            print(f"  step 2       : {command}")
+            await client.set_light_state(fan, state)
+        else:
+            await client.set_light_state(fan, state)
 
         after = await client.get_state_for_fan(fan)
         print(f"\n  light after  : {after.light}")
@@ -135,6 +151,14 @@ def main() -> int:
     sleep.add_argument(
         "--no-sleep", dest="sleep", action="store_false", default=None,
         help="switch to normal mode",
+    )
+    parser.add_argument(
+        "--two-step",
+        action="store_true",
+        help="send the mode change first, then the brightness, as two commands",
+    )
+    parser.add_argument(
+        "--gap", type=float, default=3.0, help="seconds between the two steps"
     )
     parser.add_argument(
         "--sleep-brightness",

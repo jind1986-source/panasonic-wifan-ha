@@ -64,7 +64,7 @@ def changes(
 
 async def poll(client, fan, ids: list[int]) -> dict[int, bytes] | None:
     """One read of every id, or None if the device did not answer."""
-    control = await client.query_raw(fan, ids)
+    control = await client.query_raw(fan, ids, require_ids=True)
     if control is None or control.get("result") != "success_response":
         return None
     return {field.id: field.value for field in packet.decode(control["packet"])}
