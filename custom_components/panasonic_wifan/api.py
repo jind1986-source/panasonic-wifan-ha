@@ -5,6 +5,7 @@ API Client for interacting with the Panasonic WiFan cloud service.
 import aiohttp
 import asyncio
 from datetime import datetime as dt, timezone
+from time import monotonic
 import logging
 from typing import Literal, Sequence
 
@@ -56,6 +57,11 @@ ON_TRAILER = Field(id=ID_TIMER, value=bytes.fromhex("FF31FFFF"))
 OFF_TRAILER = Field(id=ID_OFF_TIMER, value=bytes.fromhex("3140FFFF"))
 
 SLEEP_AFTER_QUERY = 2  # seconds
+
+# How long a state read stays good for. Each appliance carries a fan, a light
+# and a sleep switch, and they update on the same schedule, so without this
+# they would each poll the cloud separately for the same answer.
+CACHE_TTL = 60  # seconds
 GET = "GET"
 SET = "SET"
 
@@ -82,6 +88,8 @@ class ApiClient:
     def __init__(self, username: str, password: str):
         self.auth = PanasonicGLBAuthClient(username, password)
         self.session = aiohttp.ClientSession()
+        self._cache: dict[str, tuple[float, DeviceState]] = {}
+        self._cache_lock = asyncio.Lock()
 
     async def _request(self, method: str, url: str, **kwargs):
         """Helper method to make API requests with common headers and error handling."""
@@ -192,6 +200,7 @@ class ApiClient:
 
                 state = decode_get_state_packet(control["packet"])
                 device_states[fan.unique_id] = state
+                self._cache[fan.unique_id] = (monotonic(), state)
                 _LOGGER.debug(
                     "Fetched state for %s: is_on=%s, speed=%s, reverse=%s, "
                     "yuragi=%s, light=%s",
@@ -223,9 +232,40 @@ class ApiClient:
 
         return device_states
 
-    async def get_state_for_fan(self, fan: Fan) -> DeviceState:
-        states = await self.get_state_for_fans([fan])
-        return states[fan.unique_id]
+    async def get_state_for_fan(
+        self, fan: Fan, *, max_age: float | None = CACHE_TTL
+    ) -> DeviceState:
+        """Read one appliance's state, reusing a recent read if there is one.
+
+        The entities for one appliance refresh together, so a short-lived cache
+        turns three polls into one. Pass max_age=0 to force a fresh read.
+        """
+        if (cached := self._cached(fan, max_age)) is not None:
+            _LOGGER.debug("Using the cached state for %s", fan.name)
+            return cached
+
+        async with self._cache_lock:
+            # Another entity may have refreshed it while this one waited.
+            if (cached := self._cached(fan, max_age)) is not None:
+                _LOGGER.debug("Using the state %s just fetched", fan.name)
+                return cached
+
+            states = await self.get_state_for_fans([fan])
+            return states[fan.unique_id]
+
+    def _cached(self, fan: Fan, max_age: float | None) -> DeviceState | None:
+        if not max_age:
+            return None
+        if (entry := self._cache.get(fan.unique_id)) is None:
+            return None
+        fetched_at, state = entry
+        if monotonic() - fetched_at > max_age:
+            return None
+        return state
+
+    def forget(self, fan: Fan) -> None:
+        """Drop a cached state, after a command has changed the appliance."""
+        self._cache.pop(fan.unique_id, None)
 
     async def _latest_control(self, fan: Fan) -> dict | None:
         """The most recently completed GET response for one appliance."""
@@ -324,9 +364,11 @@ class ApiClient:
         return None
 
     async def set_state(self, fan: Fan, state: FanState):
+        self.forget(fan)
         await self._post_device_controls(fan, SET, make_command_packet(state))
 
     async def set_light_state(self, fan: Fan, state: LightState):
+        self.forget(fan)
         await self._post_device_controls(fan, SET, make_light_command_packet(state))
 
     async def _post_device_controls(

@@ -27,6 +27,8 @@ STATE_PACKET = "040080013000F0013300F1014100F20131"
 def make_client(responses):
     """An ApiClient whose HTTP layer replays the given responses in order."""
     client = api.ApiClient.__new__(api.ApiClient)
+    client._cache = {}
+    client._cache_lock = asyncio.Lock()
     remaining = list(responses)
 
     async def fake_request(method, url, **kwargs):
@@ -214,3 +216,62 @@ def test_query_raw_still_reports_a_rejection():
         client.query_raw(FAN, [0x0081], attempts=1, delay=0, require_ids=True)
     )
     assert found["result"] == "error_response"
+
+
+def test_a_second_read_reuses_the_first(monkeypatch):
+    """Three entities per appliance must not mean three polls."""
+    monkeypatch.setattr(api, "SLEEP_AFTER_QUERY", 0)
+    client = make_client(
+        [None, {"accepted": True}, {"controls": [control("20260202000000+0000")]}]
+    )
+
+    async def read_twice():
+        first = await client.get_state_for_fan(FAN)
+        second = await client.get_state_for_fan(FAN)
+        return first, second
+
+    first, second = asyncio.run(read_twice())
+    assert first is second
+
+
+def test_a_forced_read_ignores_the_cache(monkeypatch):
+    monkeypatch.setattr(api, "SLEEP_AFTER_QUERY", 0)
+    client = make_client(
+        [
+            None,
+            {"accepted": True},
+            {"controls": [control("20260202000000+0000")]},
+            None,
+            {"accepted": True},
+            {"controls": [control("20260303000000+0000")]},
+        ]
+    )
+
+    async def read_twice():
+        await client.get_state_for_fan(FAN)
+        return await client.get_state_for_fan(FAN, max_age=0)
+
+    assert asyncio.run(read_twice()) is not None
+
+
+def test_a_command_drops_the_cached_state(monkeypatch):
+    """State read after a command must not be the state before it."""
+    monkeypatch.setattr(api, "SLEEP_AFTER_QUERY", 0)
+    client = make_client(
+        [
+            None,
+            {"accepted": True},
+            {"controls": [control("20260202000000+0000")]},
+            {"accepted": True},  # the command
+        ]
+    )
+
+    async def read_then_command():
+        await client.get_state_for_fan(FAN)
+        assert FAN.unique_id in client._cache
+        await client.set_state(
+            FAN, types_.FanState(is_on=True, speed=3, reverse=False, yuragi=False)
+        )
+        return FAN.unique_id in client._cache
+
+    assert asyncio.run(read_then_command()) is False

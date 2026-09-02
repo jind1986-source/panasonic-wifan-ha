@@ -3,7 +3,7 @@
 DOMAIN = "panasonic_wifan"
 
 # Platforms
-PLATFORMS = ["fan", "light"]
+PLATFORMS = ["fan", "light", "switch"]
 
 # Speed settings
 MIN_SPEED = 1

@@ -8,7 +8,7 @@ A native Home Assistant integration for Panasonic Malaysia WiFi fans. This integ
 - Set fan speed (1-10 range)
 - Reverse mode
 - Yuragi mode (implemented as "oscillation")
-- Optimistic state updates (polling every 5 minutes)
+- Optimistic state updates (polling every 5 minutes, shared between entities)
 - Light control: on/off, brightness, colour temperature (warm to daylight),
   and sleep mode with its own dimmer, on fans that have a light
 
@@ -105,6 +105,15 @@ hundred.
 In Home Assistant, sleep mode appears as the light's **effect**: `Normal` or
 `Sleep`. The brightness slider applies to whichever mode is selected, and in
 sleep mode it snaps to the nearest of the three steps.
+
+It is also exposed as a separate **switch**, `Light sleep mode`. That is
+deliberate duplication: HomeKit's lightbulb service has no notion of a light
+effect, so a bridged light cannot carry sleep mode to Apple Home at all. A
+switch is the only shape that crosses that bridge.
+
+The three entities of one appliance refresh on the same schedule, so a state
+read is cached briefly and shared between them rather than each polling the
+cloud for the same answer. A command drops the cached state.
 
 Both were found by polling every field on an F-M12GC while operating the light
 in the Panasonic app, with a deliberate fan speed change in the same run as a
