@@ -104,3 +104,38 @@ def test_get_state_for_fans_decodes_a_control(monkeypatch):
     )
     states = asyncio.run(client.get_state_for_fans([FAN]))
     assert states[FAN.unique_id].fan.speed == 3
+
+
+def test_state_arriving_on_a_later_attempt_is_still_returned():
+    """The bug that left lights missing: one read was not enough."""
+    client = make_client(
+        [
+            {"accepted": True},  # the POST
+            None,  # nothing yet
+            {"controls": []},  # still nothing
+            {"controls": [control("20260202000000+0000")]},
+        ]
+    )
+    states = asyncio.run(
+        client.get_state_for_fans([FAN], attempts=4, delay=0)
+    )
+    assert states[FAN.unique_id].fan.speed == 3
+
+
+def test_state_polling_gives_up_after_the_last_attempt():
+    client = make_client([{"accepted": True}, None, None])
+    assert asyncio.run(client.get_state_for_fans([FAN], attempts=2, delay=0)) == {}
+
+
+def test_state_polling_stops_early_once_every_fan_has_answered():
+    client = make_client(
+        [{"accepted": True}, {"controls": [control("20260202000000+0000")]}]
+    )
+    states = asyncio.run(client.get_state_for_fans([FAN], attempts=5, delay=0))
+    assert len(states) == 1
+
+
+def test_state_polling_ignores_a_failed_control():
+    failed = control("20260202000000+0000", result="error_response")
+    client = make_client([{"accepted": True}, {"controls": [failed]}])
+    assert asyncio.run(client.get_state_for_fans([FAN], attempts=1, delay=0)) == {}

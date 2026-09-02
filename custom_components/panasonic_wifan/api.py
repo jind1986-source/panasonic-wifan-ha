@@ -86,59 +86,68 @@ class ApiClient:
         data = await self._request("GET", f"{BASE_URL}/devices")
         return [Fan.from_api(item) for item in data.get("devices", [])]
 
-    async def get_state_for_fans(self, fans: list[Fan]) -> dict[str, DeviceState]:
+    async def get_state_for_fans(
+        self,
+        fans: list[Fan],
+        *,
+        attempts: int = 5,
+        delay: float | None = None,
+    ) -> dict[str, DeviceState]:
+        """Read the state of several appliances.
+
+        A device answers through the cloud, and how long that takes varies, so
+        the reply is waited for over several reads rather than a single one. A
+        caller that decides something from the presence of a state — whether to
+        create a light entity, say — would otherwise see nothing at all on a
+        slow reply.
+        """
+        if delay is None:
+            delay = SLEEP_AFTER_QUERY
+
         fans_by_id = {fan.unique_id: fan for fan in fans}
 
         for fan in fans:
-            await self._request(
-                "POST",
-                DEVICE_CONTROLS_URL,
-                json={
-                    "appliance_id": fan.unique_id,
-                    "method": GET,
-                    "packet": QUERY_PACKET,
-                },
-            )
-
-        # Wait a bit to allow cloud to process the responses
-        await asyncio.sleep(SLEEP_AFTER_QUERY)
-
-        data = await self._request("GET", DEVICE_CONTROLS_URL)
-
-        """
-        Example response data:
-        {   
-            "controls": [
-                {
-                    "accepted_id": "xxx",
-                    "accepted_at": "20251117054743+0000",
-                    "appliance_id": "xxx",
-                    "method": "GET",
-                    "status": "complete",
-                    "completed_at": "20251117054744+0000",
-                    "result": "success_response",
-                    "reason": "200",
-                    "packet": "0A0080013000F0013200F1014100F20...",
-                },
-            ]
-        }
-        """
-
-        _LOGGER.debug("Fetched deviceControls: %s", data)
+            await self.request_fields(fan, _query_ids())
 
         device_states: dict[str, DeviceState] = {}
-        controls = sorted(
-            _controls(data), key=lambda x: x.get("completed_at", ""), reverse=True
-        )
-        if controls:
+
+        for attempt in range(attempts):
+            await asyncio.sleep(delay)
+
+            data = await self._request("GET", DEVICE_CONTROLS_URL)
+
+            """
+            Example response data:
+            {
+                "controls": [
+                    {
+                        "accepted_id": "xxx",
+                        "accepted_at": "20251117054743+0000",
+                        "appliance_id": "xxx",
+                        "method": "GET",
+                        "status": "complete",
+                        "completed_at": "20251117054744+0000",
+                        "result": "success_response",
+                        "reason": "200",
+                        "packet": "0A0080013000F0013200F1014100F20...",
+                    },
+                ]
+            }
+            """
+
+            _LOGGER.debug("Fetched deviceControls: %s", data)
+
+            controls = sorted(
+                _controls(data), key=lambda x: x.get("completed_at", ""), reverse=True
+            )
             for control in controls:
-                if control["method"] != GET:
+                if control.get("method") != GET:
                     continue
                 if control.get("status") != "complete":
                     continue
                 if control.get("result") != "success_response":
                     continue
-                if (fan := fans_by_id.get(control["appliance_id"])) is None:
+                if (fan := fans_by_id.get(control.get("appliance_id"))) is None:
                     continue
                 if fan.unique_id in device_states:
                     continue
@@ -155,6 +164,24 @@ class ApiClient:
                     state.fan.yuragi,
                     state.light,
                 )
+
+            if len(device_states) == len(fans):
+                break
+
+            _LOGGER.debug(
+                "Have state for %s of %s appliance(s) after attempt %s",
+                len(device_states),
+                len(fans),
+                attempt + 1,
+            )
+
+        missing = [f.name for f in fans if f.unique_id not in device_states]
+        if missing:
+            _LOGGER.warning(
+                "No state returned for %s after %s attempt(s)",
+                ", ".join(missing),
+                attempts,
+            )
 
         return device_states
 
@@ -218,7 +245,7 @@ class ApiClient:
         ids: Sequence[int],
         *,
         attempts: int = 5,
-        delay: float = SLEEP_AFTER_QUERY,
+        delay: float | None = None,
     ) -> dict | None:
         """Ask a device for arbitrary fields and return the raw control record.
 
@@ -226,6 +253,9 @@ class ApiClient:
         arrives, and the record itself — including a failed ``result`` — when
         the device rejects the query.
         """
+        if delay is None:
+            delay = SLEEP_AFTER_QUERY
+
         previous = await self._latest_control(fan)
         since = previous.get("completed_at", "") if previous else ""
 

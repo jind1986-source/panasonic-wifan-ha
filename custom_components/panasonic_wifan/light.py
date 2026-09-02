@@ -45,21 +45,35 @@ async def async_setup_entry(
     data = hass.data[DOMAIN][entry.entry_id]
     api = data["api"]
     fans = data["fans"]
+    states = data.get("states") or {}
 
-    try:
-        states = await api.get_state_for_fans(fans)
-    except Exception as err:  # noqa: BLE001 - setup must not abort on one device
-        _LOGGER.error("Could not read state while looking for lights: %s", err)
-        return
+    # Any device whose state did not arrive during setup is asked again here
+    # rather than silently going without a light entity.
+    unknown = [fan for fan in fans if fan.unique_id not in states]
+    if unknown:
+        _LOGGER.debug(
+            "Re-reading state for %s", ", ".join(fan.name for fan in unknown)
+        )
+        try:
+            states = {**states, **await api.get_state_for_fans(unknown)}
+        except Exception as err:  # noqa: BLE001 - setup must not abort on one device
+            _LOGGER.error("Could not read state while looking for lights: %s", err)
 
     entities = []
     for fan in fans:
         state = states.get(fan.unique_id)
-        if state is None or state.light is None:
+        if state is None:
+            _LOGGER.warning(
+                "%s did not report its state, so it gets no light entity",
+                fan.name,
+            )
+            continue
+        if state.light is None:
             _LOGGER.debug("%s reports no light", fan.name)
             continue
         entities.append(PanasonicWiFiLight(api, fan, state.light))
 
+    _LOGGER.debug("Adding %s light entity(ies)", len(entities))
     async_add_entities(entities)
 
 
