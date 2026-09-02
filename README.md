@@ -9,7 +9,7 @@ A native Home Assistant integration for Panasonic Malaysia WiFi fans. This integ
 - Reverse mode
 - Yuragi mode (implemented as "oscillation")
 - Optimistic state updates (polling every 5 minutes)
-- Light control with brightness, on fans that have a light
+- Light control with brightness and colour temperature (warm to daylight), on fans that have a light
 
 ## Installation
 
@@ -59,7 +59,8 @@ Fields seen so far:
 | `0x00F2` | Yuragi (`0x30` on, `0x31` off) |
 | `0x00F3` | Light power (`0x30` on, `0x31` off) |
 | `0x00F5` | Light brightness, percentage byte (`0x64` = 100%) |
-| `0x00F4`, `0x00F6`, `0x00F7` | Unmapped, but a light command is ignored without them |
+| `0x00F6` | Light colour temperature, `0x00` warm to `0x64` daylight |
+| `0x00F4`, `0x00F7` | Unmapped, but a light command is ignored without them |
 | `0x0081`, `0x0082`, `0x008A` | Unmapped |
 | `0x008C` | Model name in ASCII, e.g. `F-M12GC` |
 | `0x009D`, `0x009E`, `0x009F` | Tables, not decoded |
@@ -79,14 +80,17 @@ beeps and the light does not move. The whole light group has to be present, in
 the order the device reports it:
 
 ```
-0x00F3 power   0x00F4 ?   0x00F5 brightness   0x00F6 ?   0x00F7 ?
+0x00F3 power   0x00F4 ?   0x00F5 brightness   0x00F6 colour temp   0x00F7 ?
 ```
 
-What the other three mean is unknown. `0x00F4` has only ever held `0x42`, but
-`0x00F6` has been seen at both `0x20` and `0x29`, so they are read from the
-device and echoed back rather than assumed constant. That is why `LightState`
-carries a `companions` field and why a command cannot be built without a state
-read behind it.
+`0x00F6` is colour temperature, a percentage from warm at `0x00` to daylight at
+`0x64`, watched moving as the app's warm/daylight control was used.
+
+`0x00F4` and `0x00F7` remain unknown, holding `0x42` and `0x01` on every device
+seen so far. Since a command is ignored without them and their meaning is not
+established, they are read from the device and echoed back rather than
+hardcoded. That is why `LightState` carries a `companions` field and why a
+command cannot be built without a state read behind it.
 
 Both were found by polling every field on an F-M12GC while operating the light
 in the Panasonic app, with a deliberate fan speed change in the same run as a

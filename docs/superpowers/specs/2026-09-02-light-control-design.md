@@ -98,9 +98,24 @@ Walking candidate packet shapes settled it: the light only switches when the
 whole group `0x00F3`, `0x00F4`, `0x00F5`, `0x00F6`, `0x00F7` is present, in
 that order. Power and brightness alone are acknowledged and discarded.
 
-`0x00F4` and `0x00F7` have been constant so far (`0x42`, `0x01`) but `0x00F6`
-has been seen at `0x20` and `0x29`, so all three are echoed from a state read
-rather than hardcoded. `LightState.companions` carries them, excluded from
+Watching fields while the app's own brightness and warm/daylight controls were
+used then resolved two more:
+
+| Field | Observed |
+| --- | --- |
+| `0x00F5` | `0x14` -> `0x01` -> `0x64` across the brightness slider |
+| `0x00F6` | `0x20` -> `0x00` on warm, `0x00` -> `0x64` on daylight |
+
+So `0x00F6` is colour temperature on the same percentage scale as brightness,
+warm at 0 and daylight at 100. It is presented in Home Assistant as 2700K to
+6500K; the device reports a percentage and the fitting's real colour
+temperatures are not published, so those Kelvin ends are a reading of "warm"
+and "daylight" rather than measured values. The mapping is linear and
+monotonic, which is what the slider needs.
+
+`0x00F4` and `0x00F7` are still unknown, holding `0x42` and `0x01` throughout.
+They are echoed from a state read rather than hardcoded, since a command is
+ignored without them. `LightState.companions` carries them, excluded from
 equality since they are not part of what a user means by the light's state.
 
 The Panasonic app's own packets were never observed. The cloud's control log

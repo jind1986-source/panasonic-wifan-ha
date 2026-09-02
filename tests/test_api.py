@@ -53,7 +53,7 @@ def test_out_of_range_speed_is_rejected(speed):
 def test_query_packet_asks_for_the_fan_and_light_fields():
     assert api.QUERY_PACKET == (
         "0F00800000F00000F10000F20000F80000F90000FA0000FB00008600008800"
-        "00F30000F50000F40000F60000F700"
+        "00F30000F50000F60000F40000F700"
     )
 
 
@@ -93,8 +93,11 @@ def test_decode_rejects_an_unknown_power_value():
         api.decode_get_state_packet(response)
 
 
-# The companion values the Study fan reported when variant 4 worked.
-COMPANIONS = ((0x00F4, b"\x42"), (0x00F6, b"\x20"), (0x00F7, b"\x01"))
+# The companion values the Study fan reported when variant 4 worked. 0x00F6
+# was among them at the time; it is colour temperature and now has a field of
+# its own.
+COMPANIONS = ((0x00F4, b"\x42"), (0x00F7, b"\x01"))
+WORKING_COLOR_TEMP = 32  # 0x20, what the fan was set to at the time
 
 # The exact packet that switched the physical light on.
 WORKING_COMMAND = (
@@ -109,7 +112,12 @@ def test_light_command_matches_the_packet_that_worked():
     Power and brightness alone are acknowledged with a beep and discarded, so
     the whole light group has to go out in this order.
     """
-    state = LightState(is_on=True, brightness=58, companions=COMPANIONS)
+    state = LightState(
+        is_on=True,
+        brightness=58,
+        color_temp=WORKING_COLOR_TEMP,
+        companions=COMPANIONS,
+    )
     assert api.make_light_command_packet(state) == WORKING_COMMAND
 
 
@@ -128,11 +136,33 @@ def test_light_off_command_still_sends_the_whole_group():
 
 
 def test_light_command_echoes_companions_as_read():
-    companions = ((0x00F4, b"\x42"), (0x00F6, b"\x29"), (0x00F7, b"\x01"))
+    companions = ((0x00F4, b"\x42"), (0x00F7, b"\x09"))
     state = LightState(is_on=True, brightness=100, companions=companions)
     fields = packet.as_dict(packet.decode(api.make_light_command_packet(state)))
-    assert fields[0x00F6].value == b"\x29"
+    assert fields[0x00F4].value == b"\x42"
+    assert fields[0x00F7].value == b"\x09"
     assert fields[0x00F5].value == bytes([100])
+
+
+@pytest.mark.parametrize("color_temp,expected", [(0, b"\x00"), (100, b"\x64"), (32, b"\x20")])
+def test_light_command_carries_colour_temperature(color_temp, expected):
+    """0x00 is warm and 0x64 daylight, watched moving in the app."""
+    state = LightState(
+        is_on=True, brightness=50, color_temp=color_temp, companions=COMPANIONS
+    )
+    fields = packet.as_dict(packet.decode(api.make_light_command_packet(state)))
+    assert fields[0x00F6].value == expected
+
+
+@pytest.mark.parametrize("color_temp", [-1, 101, 255])
+def test_light_command_rejects_out_of_range_colour_temperature(color_temp):
+    with pytest.raises(ValueError, match="Colour temperature must be"):
+        api.make_light_command_packet(
+            LightState(
+                is_on=True, brightness=50, color_temp=color_temp,
+                companions=COMPANIONS,
+            )
+        )
 
 
 def test_light_command_refuses_to_invent_companions():
@@ -142,7 +172,7 @@ def test_light_command_refuses_to_invent_companions():
 
 
 def test_light_command_names_the_companions_it_lacks():
-    with pytest.raises(ValueError, match="0x00f6, 0x00f7"):
+    with pytest.raises(ValueError, match="0x00f7"):
         api.make_light_command_packet(
             LightState(is_on=True, brightness=50, companions=((0x00F4, b"\x42"),))
         )
@@ -168,6 +198,25 @@ def test_light_command_does_not_touch_the_fan_fields():
 def test_light_command_rejects_out_of_range_brightness(brightness):
     with pytest.raises(ValueError, match="Brightness must be"):
         api.make_light_command_packet(LightState(is_on=True, brightness=brightness))
+
+
+@pytest.mark.parametrize(
+    "byte,expected",
+    [(0x00, 0), (0x64, 100), (0x20, 32)],
+)
+def test_colour_temperature_is_read_as_a_percentage(byte, expected):
+    """Warm is 0x00, daylight 0x64."""
+    response = packet.encode(
+        [
+            packet.Field(id=0x0080, value=bytes([0x30])),
+            packet.Field(id=0x00F0, value=bytes([0x33])),
+            packet.Field(id=0x00F1, value=bytes([0x41])),
+            packet.Field(id=0x00F2, value=bytes([0x31])),
+            packet.Field(id=0x00F3, value=bytes([0x30])),
+            packet.Field(id=0x00F6, value=bytes([byte])),
+        ]
+    )
+    assert api.decode_get_state_packet(response).light.color_temp == expected
 
 
 @pytest.mark.parametrize(
@@ -221,8 +270,9 @@ def test_a_device_reporting_no_light_field_has_no_light():
 
 def test_light_ids_are_included_in_the_query():
     ids = api._query_ids()
-    assert 0x00F3 in ids and 0x00F5 in ids
-    assert ids[-3:] == (0x00F4, 0x00F6, 0x00F7)
+    for light_field in (0x00F3, 0x00F5, 0x00F6):
+        assert light_field in ids
+    assert ids[-2:] == (0x00F4, 0x00F7)
 
 
 def test_decoded_state_carries_the_companions_a_command_needs():
@@ -241,5 +291,6 @@ def test_decoded_state_carries_the_companions_a_command_needs():
     )
     light = api.decode_get_state_packet(response).light
     assert light.companions == COMPANIONS
+    assert light.color_temp == WORKING_COLOR_TEMP
     # A command can be built straight from what was read.
     assert api.make_light_command_packet(light) == WORKING_COMMAND

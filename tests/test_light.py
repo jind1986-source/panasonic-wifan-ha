@@ -42,13 +42,82 @@ def test_out_of_range_device_brightness_is_clamped(value):
     assert 1 <= light.to_ha_brightness(value) <= 255
 
 
-def test_entity_reports_brightness_support():
-    entity = light.PanasonicWiFiLight(None, FAN, LightState(is_on=True, brightness=58))
+def test_entity_reports_brightness_and_colour_temperature_support():
+    entity = light.PanasonicWiFiLight(
+        None, FAN, LightState(is_on=True, brightness=58, color_temp=32)
+    )
     assert entity.unique_id == "abc123_light"
-    assert entity.color_mode == "brightness"
-    assert entity.supported_color_modes == {"brightness"}
+    assert entity.color_mode == "color_temp"
+    assert entity.supported_color_modes == {"color_temp"}
     assert entity.is_on is True
     assert entity.brightness == light.to_ha_brightness(58)
+    assert entity.color_temp_kelvin == light.to_kelvin(32)
+    assert entity.min_color_temp_kelvin == 2700
+    assert entity.max_color_temp_kelvin == 6500
+
+
+def test_warm_and_daylight_map_to_the_ends_of_the_kelvin_range():
+    assert light.to_kelvin(0) == 2700
+    assert light.to_kelvin(100) == 6500
+    assert light.to_device_color_temp(2700) == 0
+    assert light.to_device_color_temp(6500) == 100
+
+
+@pytest.mark.parametrize("percent", range(0, 101, 5))
+def test_colour_temperature_survives_a_round_trip(percent):
+    assert light.to_device_color_temp(light.to_kelvin(percent)) == percent
+
+
+@pytest.mark.parametrize("kelvin", [1000, 2000, 9000, 20000])
+def test_out_of_range_kelvin_is_clamped(kelvin):
+    assert 0 <= light.to_device_color_temp(kelvin) <= 100
+
+
+def test_turning_on_with_a_kelvin_value_sends_it():
+    sent = []
+
+    class Api:
+        async def set_light_state(self, fan, state):
+            sent.append(state)
+
+    entity = light.PanasonicWiFiLight(
+        Api(),
+        FAN,
+        LightState(
+            is_on=False,
+            brightness=58,
+            color_temp=0,
+            companions=((0x00F4, b"\x42"), (0x00F7, b"\x01")),
+        ),
+    )
+    entity.async_write_ha_state = lambda: None
+
+    asyncio.run(entity.async_turn_on(color_temp_kelvin=6500))
+    assert sent[0].color_temp == 100
+    assert sent[0].is_on is True
+
+
+def test_turning_on_without_a_kelvin_value_keeps_the_current_one():
+    sent = []
+
+    class Api:
+        async def set_light_state(self, fan, state):
+            sent.append(state)
+
+    entity = light.PanasonicWiFiLight(
+        Api(),
+        FAN,
+        LightState(
+            is_on=False,
+            brightness=58,
+            color_temp=32,
+            companions=((0x00F4, b"\x42"), (0x00F7, b"\x01")),
+        ),
+    )
+    entity.async_write_ha_state = lambda: None
+
+    asyncio.run(entity.async_turn_on())
+    assert sent[0].color_temp == 32
 
 
 def test_entity_shares_a_device_with_the_fan():

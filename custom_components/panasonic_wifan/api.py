@@ -24,13 +24,15 @@ from .const import (
     ID_SPEED,
     ID_TIMER,
     ID_DIRECTION,
+    ID_LIGHT_COLOR_TEMP,
     ID_UNKNOWN_F4,
-    ID_UNKNOWN_F6,
     ID_UNKNOWN_F7,
     ID_YURAGI,
     MAX_BRIGHTNESS,
+    MAX_COLOR_TEMP,
     MAX_SPEED,
     MIN_BRIGHTNESS,
+    MIN_COLOR_TEMP,
     MIN_SPEED,
     POWER_OFF,
     POWER_ON,
@@ -65,6 +67,7 @@ def _query_ids() -> tuple[int, ...]:
         ids.append(ID_LIGHT_POWER)
     if ID_LIGHT_BRIGHTNESS is not None:
         ids.append(ID_LIGHT_BRIGHTNESS)
+    ids.append(ID_LIGHT_COLOR_TEMP)
     # Polled because a light command has to send them back.
     ids.extend(LIGHT_COMPANION_IDS)
     return tuple(ids)
@@ -314,6 +317,7 @@ class ApiClient:
             state = LightState(
                 is_on=state.is_on,
                 brightness=state.brightness,
+                color_temp=state.color_temp,
                 companions=current.light.companions,
             )
 
@@ -408,6 +412,11 @@ def make_light_command_packet(state: LightState) -> str:
         raise ValueError(
             f"Brightness must be between {MIN_BRIGHTNESS} and {MAX_BRIGHTNESS}"
         )
+    if state.color_temp < MIN_COLOR_TEMP or state.color_temp > MAX_COLOR_TEMP:
+        raise ValueError(
+            f"Colour temperature must be between {MIN_COLOR_TEMP} and "
+            f"{MAX_COLOR_TEMP}"
+        )
 
     companions = dict(state.companions)
     missing = [f"{i:#06x}" for i in LIGHT_COMPANION_IDS if i not in companions]
@@ -425,7 +434,7 @@ def make_light_command_packet(state: LightState) -> str:
     # Brightness is a percentage byte, so it is written whole rather than
     # through the nibble encoding the fan settings use.
     fields.append(Field(id=ID_LIGHT_BRIGHTNESS, value=bytes([state.brightness])))
-    fields.append(Field(id=ID_UNKNOWN_F6, value=companions[ID_UNKNOWN_F6]))
+    fields.append(Field(id=ID_LIGHT_COLOR_TEMP, value=bytes([state.color_temp])))
     fields.append(Field(id=ID_UNKNOWN_F7, value=companions[ID_UNKNOWN_F7]))
 
     return packet.encode(fields)
@@ -495,6 +504,10 @@ def _decode_light(fields: dict[int, Field]) -> LightState | None:
     ):
         brightness = min(MAX_BRIGHTNESS, max(MIN_BRIGHTNESS, field.byte))
 
+    color_temp = MIN_COLOR_TEMP
+    if field := fields.get(ID_LIGHT_COLOR_TEMP):
+        color_temp = min(MAX_COLOR_TEMP, max(MIN_COLOR_TEMP, field.byte))
+
     companions = tuple(
         (field_id, fields[field_id].value)
         for field_id in LIGHT_COMPANION_IDS
@@ -504,5 +517,6 @@ def _decode_light(fields: dict[int, Field]) -> LightState | None:
     return LightState(
         is_on=power.low_nibble == POWER_ON,
         brightness=brightness,
+        color_temp=color_temp,
         companions=companions,
     )

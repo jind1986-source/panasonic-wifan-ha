@@ -70,6 +70,9 @@ class FanState:
 class LightState:
     """State of the light fitted to a fan, when it has one.
 
+``brightness`` and ``color_temp`` are both percentages, the latter running
+    from warm at 0 to daylight at 100.
+
     ``companions`` holds the neighbouring light fields exactly as the device
     reported them. A light command is ignored unless they are sent back with
     it, and their meaning is unknown, so they are carried around rather than
@@ -79,6 +82,7 @@ class LightState:
 
     is_on: bool
     brightness: int
+    color_temp: int = 0
     companions: tuple[tuple[int, bytes], ...] = field(default=(), compare=False)
 
 

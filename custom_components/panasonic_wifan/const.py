@@ -83,13 +83,28 @@ ID_LIGHT_BRIGHTNESS: int | None = 0x00F5
 MIN_BRIGHTNESS = 1
 MAX_BRIGHTNESS = 100
 
+# Colour temperature, a percentage like brightness: 0x00 is warm, 0x64 is
+# daylight. Watched moving 0x20 -> 0x00 when warm was chosen in the app and
+# 0x00 -> 0x64 for daylight.
+ID_LIGHT_COLOR_TEMP = 0x00F6
+MIN_COLOR_TEMP = 0
+MAX_COLOR_TEMP = 100
+
+# The Kelvin values the two ends are presented as in Home Assistant. The scale
+# the device reports is a percentage, not Kelvin, and the fitting's real colour
+# temperatures are not published, so these are a reasonable reading of "warm"
+# and "daylight" rather than measured figures.
+WARM_KELVIN = 2700
+DAYLIGHT_KELVIN = 6500
+
 # The device ignores a light command that carries only power and brightness -
 # it acknowledges it with a beep and does nothing. The whole light group has to
-# be present, in this order: 0x00F3, 0x00F4, 0x00F5, 0x00F6, 0x00F7. What the
-# other three mean is unknown; 0x00F4 holds 0x42, and 0x00F6 has been seen at
-# 0x20 and 0x29, so they are echoed back as read rather than assumed constant.
+# be present, in this order: 0x00F3, 0x00F4, 0x00F5, 0x00F6, 0x00F7.
+#
+# 0x00F4 and 0x00F7 have held 0x42 and 0x01 on every device seen so far, but
+# their meaning is unknown, so they are echoed back as read rather than
+# assumed constant.
 ID_UNKNOWN_F4 = 0x00F4
-ID_UNKNOWN_F6 = 0x00F6
 ID_UNKNOWN_F7 = 0x00F7
 
-LIGHT_COMPANION_IDS: tuple[int, ...] = (ID_UNKNOWN_F4, ID_UNKNOWN_F6, ID_UNKNOWN_F7)
+LIGHT_COMPANION_IDS: tuple[int, ...] = (ID_UNKNOWN_F4, ID_UNKNOWN_F7)

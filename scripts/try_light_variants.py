@@ -39,7 +39,7 @@ PROBE_IDS = (
     const.ID_LIGHT_POWER,
     const.ID_UNKNOWN_F4,
     const.ID_LIGHT_BRIGHTNESS,
-    const.ID_UNKNOWN_F6,
+    const.ID_LIGHT_COLOR_TEMP,
     const.ID_UNKNOWN_F7,
     const.ID_TIMER,
 )
@@ -68,7 +68,7 @@ def variants(current: dict[int, bytes], on: bool) -> list[tuple[str, list]]:
         + echo(const.ID_DIRECTION)
         + echo(const.ID_YURAGI)
     )
-    neighbours = echo(const.ID_UNKNOWN_F4) + echo(const.ID_UNKNOWN_F6) + echo(
+    neighbours = echo(const.ID_UNKNOWN_F4) + echo(const.ID_LIGHT_COLOR_TEMP) + echo(
         const.ID_UNKNOWN_F7
     )
 
@@ -85,7 +85,7 @@ def variants(current: dict[int, bytes], on: bool) -> list[tuple[str, list]]:
             + light
             + echo(const.ID_UNKNOWN_F4)
             + brightness
-            + echo(const.ID_UNKNOWN_F6)
+            + echo(const.ID_LIGHT_COLOR_TEMP)
             + echo(const.ID_UNKNOWN_F7),
         ),
         (
@@ -99,7 +99,7 @@ def variants(current: dict[int, bytes], on: bool) -> list[tuple[str, list]]:
             + light
             + echo(const.ID_UNKNOWN_F4)
             + brightness
-            + echo(const.ID_UNKNOWN_F6)
+            + echo(const.ID_LIGHT_COLOR_TEMP)
             + echo(const.ID_UNKNOWN_F7)
             + [FAN_TRAILER],
         ),
