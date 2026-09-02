@@ -68,7 +68,10 @@ async def run(args: argparse.Namespace) -> int:
                 before.light.brightness if before.light else const.MAX_BRIGHTNESS
             )
 
-        state = types_.LightState(is_on=args.on, brightness=brightness)
+        companions = before.light.companions if before.light else ()
+        state = types_.LightState(
+            is_on=args.on, brightness=brightness, companions=companions
+        )
         command = api.make_light_command_packet(state)
         print(f"\n  sending      : {state}")
         print(f"  packet       : {command}")
