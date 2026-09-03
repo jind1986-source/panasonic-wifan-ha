@@ -58,18 +58,18 @@ Fields seen so far:
 | `0x00F0` | Speed, 1-10 |
 | `0x00F1` | Direction (`0x41` forward, `0x42` reverse) |
 | `0x00F2` | Yuragi (`0x30` on, `0x31` off) |
-| `0x00F3` | Light power (`0x30` on, `0x31` off) |
-| `0x00F5` | Light brightness, percentage byte (`0x64` = 100%) |
-| `0x00F6` | Light colour temperature, `0x00` warm to `0x64` daylight |
-| `0x00F4` | Light mode, `0x42` normal and `0x43` sleep |
-| `0x00F7` | Sleep mode brightness — three fixed steps only: 1, 50, 100 |
 | `0x0081`, `0x0082`, `0x008A` | Unmapped |
-| `0x008C` | Model name in ASCII, e.g. `F-M12GC` |
-| `0x009D`, `0x009E`, `0x009F` | Tables, not decoded |
-| `0x00F8`, `0x00F9`, `0x00FA`, `0x00FB` | Timers, not fully decoded |
 | `0x0086` | 46-byte blob, not decoded |
 | `0x0088` | Unknown, constant `0x42` so far |
+| `0x008C` | Model name in ASCII, e.g. `F-M12GC` |
 | `0x0093`, `0x00FC`, `0x00FD`, `0x00FE` | Constant header on every SET packet |
+| `0x009D`, `0x009E`, `0x009F` | Tables, not decoded |
+| `0x00F3` | Light power (`0x30` on, `0x31` off) |
+| `0x00F4` | Light mode, `0x42` normal and `0x43` sleep |
+| `0x00F5` | Light brightness, percentage byte (`0x64` = 100%) |
+| `0x00F6` | Light colour temperature, `0x00` warm to `0x64` daylight |
+| `0x00F7` | Sleep mode brightness — three fixed steps only: 1, 50, 100 |
+| `0x00F8`, `0x00F9`, `0x00FA`, `0x00FB` | Timers, not fully decoded |
 
 ## Light control
 
@@ -111,22 +111,28 @@ deliberate duplication: HomeKit's lightbulb service has no notion of a light
 effect, so a bridged light cannot carry sleep mode to Apple Home at all. A
 switch is the only shape that crosses that bridge.
 
-The three entities of one appliance share one view of its state, and a state
-read is cached briefly rather than each polling the cloud for the same answer.
+### How the entities stay in step
 
-A command is not the last word on what the appliance did with it — entering
-sleep mode lights the fitting whether the command said so or not — so the
-device is read back a few seconds after every command. Conversely a read that
-lands within a few seconds of a command is dropped, since the appliance may not
-have reported the change yet and taking it would undo what was just asked for.
-Sharing matters as much as the caching: a light command carries the whole light
-group, so each one is built from the light's current settings. If the switch
-changed the mode and the light entity did not see it, turning the light on
-would send the mode back to normal. A command drops the cached state.
+The fan, the light and the sleep switch of one appliance share a single view of
+its state, and a state read is cached briefly so they do not each ask the cloud
+the same question. Sharing matters as much as the caching: a light command
+carries the whole light group, so each one is built from the light's current
+settings. If the switch changed the mode and the light entity had not seen it,
+turning the light on would send the mode back to normal.
 
-Both were found by polling every field on an F-M12GC while operating the light
-in the Panasonic app, with a deliberate fan speed change in the same run as a
-control. A device that does not report `0x00F3` gets no light entity.
+A command is also not the last word on what the appliance did with it — entering
+sleep mode lights the fitting whether the command said so or not — so the device
+is read back a few seconds afterwards. Conversely a read landing within a few
+seconds of a command is dropped, since the appliance may not have reported the
+change yet and taking it would undo what was just asked for.
+
+### How these fields were found
+
+Every light field above came from polling the whole field range on an F-M12GC
+while operating the corresponding control in the Panasonic app, with a
+deliberate fan speed change in the same run as a control. Nothing here is
+inferred from documentation, because none exists. A device that does not report
+`0x00F3` gets no light entity.
 
 ### Finding fields on another model
 
