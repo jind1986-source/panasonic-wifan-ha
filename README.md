@@ -11,6 +11,9 @@ A native Home Assistant integration for Panasonic Malaysia WiFi fans. This integ
 - Optimistic state updates (polling every 5 minutes, shared between entities)
 - Light control: on/off, brightness, colour temperature (warm to daylight),
   and sleep mode with its own dimmer, on fans that have a light
+- Changes wait 3 seconds for more to arrive before one command is sent, so
+  dragging a slider does not beep and move the appliance on every step; the
+  appliance is then read back to confirm what it actually did
 
 ## Installation
 
@@ -120,11 +123,27 @@ carries the whole light group, so each one is built from the light's current
 settings. If the switch changed the mode and the light entity had not seen it,
 turning the light on would send the mode back to normal.
 
-A command is also not the last word on what the appliance did with it — entering
-sleep mode lights the fitting whether the command said so or not — so the device
-is read back a few seconds afterwards. Conversely a read landing within a few
-seconds of a command is dropped, since the appliance may not have reported the
-change yet and taking it would undo what was just asked for.
+Every change — a slider drag, a toggle, on/off — shows in Home Assistant
+immediately, and starts, or restarts, a 3-second wait for that appliance's
+command. Dragging a slider through several values inside the wait, or
+following it with another control, does not send several commands: only the
+last state before it goes quiet is the one that is actually sent, once, when
+the wait elapses. The fan's fields (power, speed, direction, yuragi) have
+their own wait; the light entity and the sleep switch share **one** wait for
+the light group, so a brightness change and a sleep toggle inside the same 3
+seconds go out together as a single light command, built from whichever
+settings both entities have arrived at by the time it fires.
+
+A command is also not the last word on what the appliance did with it —
+entering sleep mode lights the fitting whether the command said so or not —
+so the appliance is read back, fresh, 2 seconds after every command, and every
+entity it touched updates from that one read (the light entity and the switch
+share it, rather than each asking the cloud separately). That deliberate
+read-back is applied even though it lands inside the few-second window that
+would otherwise make it drop a coincidental poll — a 5-minute background scan,
+or a manual refresh — landing while a change is still waiting to send, or
+shortly after it did: such a poll may still describe the state from before the
+change, so it is ignored, but the wait's own read-back is exempt.
 
 ### How these fields were found
 

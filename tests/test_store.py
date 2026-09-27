@@ -1,5 +1,7 @@
 """Tests for the shared state store."""
 
+import asyncio
+
 import pytest
 
 from _component import load
@@ -109,3 +111,84 @@ def test_a_read_is_taken_when_nothing_was_commanded():
     fresh = LightState(is_on=True, brightness=42, sleep=True)
     assert store.record_poll(FAN, fresh) is True
     assert store.light(FAN).brightness == 42
+
+
+def test_read_light_back_fetches_once_and_applies_despite_settle():
+    """The read-back is deliberate, so it bypasses record_poll's SETTLE guard."""
+
+    async def scenario():
+        store = make_store()
+        store.record_command(FAN, LightState(is_on=True, brightness=80, sleep=True))
+
+        fetches = []
+
+        async def fetch():
+            fetches.append(1)
+            return LightState(is_on=True, brightness=80, sleep=False)
+
+        state = await store.read_light_back(FAN, fetch)
+
+        assert len(fetches) == 1
+        assert state.sleep is False
+        assert store.light(FAN).sleep is False  # applied although inside SETTLE
+
+    asyncio.run(scenario())
+
+
+def test_read_light_back_is_shared_by_a_second_caller():
+    """The light entity and the sleep switch both refresh from it (decision 15)."""
+
+    async def scenario():
+        store = make_store()
+        fetches = []
+
+        async def fetch():
+            fetches.append(1)
+            return LightState(is_on=True, brightness=55, sleep=True)
+
+        first = await store.read_light_back(FAN, fetch)
+        second = await store.read_light_back(FAN, fetch)
+
+        assert len(fetches) == 1
+        assert first == second == LightState(is_on=True, brightness=55, sleep=True)
+
+    asyncio.run(scenario())
+
+
+def test_forget_light_read_makes_the_next_read_back_fetch_again():
+    async def scenario():
+        store = make_store()
+        answers = iter(
+            [
+                LightState(is_on=True, brightness=55, sleep=True),
+                LightState(is_on=True, brightness=99, sleep=False),
+            ]
+        )
+
+        async def fetch():
+            return next(answers)
+
+        first = await store.read_light_back(FAN, fetch)
+        store.forget_light_read(FAN)
+        second = await store.read_light_back(FAN, fetch)
+
+        assert first.brightness == 55
+        assert second.brightness == 99
+        assert store.light(FAN).brightness == 99
+
+    asyncio.run(scenario())
+
+
+def test_a_read_back_that_finds_no_light_leaves_the_store_alone():
+    async def scenario():
+        store = make_store()
+
+        async def fetch():
+            return None
+
+        state = await store.read_light_back(FAN, fetch)
+
+        assert state is None
+        assert store.light(FAN).brightness == 80  # unchanged
+
+    asyncio.run(scenario())
