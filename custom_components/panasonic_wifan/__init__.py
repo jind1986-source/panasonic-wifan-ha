@@ -9,6 +9,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.typing import ConfigType
 
 from .api import ApiClient
+from .debounce import CommandDebouncer
 from .store import StateStore
 from .const import DOMAIN, PLATFORMS, CONF_USERNAME, CONF_PASSWORD
 
@@ -49,13 +50,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Store API client, fans and their shared state. The store is shared so
     # that a change made through one entity is visible to the others: a light
     # command carries the whole light group, so each one is built from the
-    # light's current settings.
+    # light's current settings. The debounce helper is shared the same way,
+    # one config entry to one helper, keyed by appliance plus command kind so
+    # the fan and the light group each get their own restartable wait.
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {
         "api": api,
         "fans": fans,
         "states": states,
         "store": StateStore(states),
+        "debounce": CommandDebouncer(),
     }
 
     # Forward setup to platforms
@@ -72,6 +76,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Clean up resources and remove API client from hass.data
     if unload_ok:
         data = hass.data[DOMAIN].pop(entry.entry_id)
+        # Drop anything still waiting to send rather than sending it into a
+        # session that is about to close.
+        data["debounce"].cancel_all()
         api = data["api"]
         # Close aiohttp session
         await api.session.close()
