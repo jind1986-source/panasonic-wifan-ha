@@ -21,6 +21,11 @@ from .types import DeviceState, Fan, FanState, LightState
 # before it. Within this window a command is trusted over a read.
 SETTLE = 5  # seconds
 
+# Marks a light read-back that found no light, in ``StateStore._light_read``,
+# distinct from a key simply not having been fetched yet — see
+# ``read_light_back``.
+_NO_LIGHT = object()
+
 
 class StateStore:
     """Shared, in-memory state for the appliances of one config entry."""
@@ -28,13 +33,14 @@ class StateStore:
     def __init__(self, states: dict[str, DeviceState] | None = None) -> None:
         self._states: dict[str, DeviceState] = dict(states or {})
         self._commanded_at: dict[str, float] = {}
-        # The light read-back already fetched for a fan, if any. The light
+        # The light read-back already fetched for a fan, if any (or _NO_LIGHT
+        # for one that found no light — see read_light_back). The light
         # entity and the sleep switch both want it applied; caching it here
         # means only the first of them pays for the fresh cloud read, and the
         # second gets the same answer instead of a second one (decision 15).
         # forget_light_read drops it again once the next command is about to
         # send, so the following read-back fetches afresh.
-        self._light_read: dict[str, LightState] = {}
+        self._light_read: dict[str, LightState | object] = {}
 
     def device(self, fan: Fan) -> DeviceState | None:
         return self._states.get(fan.unique_id)
@@ -76,7 +82,8 @@ class StateStore:
         return True
 
     async def read_light_back(self, fan: Fan, read) -> LightState | None:
-        """Apply the light's read-back, fetching it at most once.
+        """Apply the light's read-back, fetching it at most once — twice if
+        the first fetch raises.
 
         ``read`` is the caller's own fresh fetch (an async callable taking no
         arguments, e.g. ``lambda: api.get_state_for_fan(fan, max_age=0)``
@@ -85,15 +92,26 @@ class StateStore:
         exempt from it, unlike an incidental poll. A second call for the same
         fan, before ``forget_light_read`` clears it, gets that same result
         instead of triggering its own fetch.
+
+        A fetch that comes back ``None`` — the device stopped reporting light
+        state — is remembered the same way a real state is, so the second
+        caller also gets ``None`` without fetching again, and the store is
+        left alone either way. A fetch that raises is deliberately *not*
+        remembered: it propagates to that caller, but the other caller still
+        gets its own attempt, since one transient failure on a shared read
+        should cost the pair at most one retry between them, not strand both
+        of them without ever trying again this cycle.
         """
         if fan.unique_id not in self._light_read:
             state = await read()
             if state is None:
+                self._light_read[fan.unique_id] = _NO_LIGHT
                 return None
             self._light_read[fan.unique_id] = state
             self.set_light(fan, state)
 
-        return self._light_read[fan.unique_id]
+        cached = self._light_read[fan.unique_id]
+        return None if cached is _NO_LIGHT else cached
 
     def forget_light_read(self, fan: Fan) -> None:
         """Drop a cached read-back result so the next one is fetched fresh.

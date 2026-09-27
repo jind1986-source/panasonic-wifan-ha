@@ -153,7 +153,12 @@ class PanasonicWiFiSleepSwitch(SwitchEntity):  # type: ignore[misc]
             _LOGGER.error("Error sending sleep mode for %s: %s", self._fan.name, err)
             return
 
-        self._store.record_command(self._fan, state)
+        # See PanasonicWiFiLight._send_command: a same-key change made while
+        # this send was in flight already wrote its own, newer state into
+        # the store, so what was just sent is only recorded while it still
+        # matches what the store is holding.
+        if self._store.light(self._fan) == state:
+            self._store.record_command(self._fan, state)
 
     async def _read_back(self) -> None:
         """Refresh from the light's read-back, shared with the light entity.
