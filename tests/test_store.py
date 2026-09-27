@@ -192,3 +192,75 @@ def test_a_read_back_that_finds_no_light_leaves_the_store_alone():
         assert store.light(FAN).brightness == 80  # unchanged
 
     asyncio.run(scenario())
+
+
+def test_a_read_back_that_finds_no_light_is_remembered_like_a_success():
+    """Decision 20: a second caller gets the same None without fetching."""
+
+    async def scenario():
+        store = make_store()
+        fetches = []
+
+        async def fetch():
+            fetches.append(1)
+            return None
+
+        first = await store.read_light_back(FAN, fetch)
+        second = await store.read_light_back(FAN, fetch)
+
+        assert len(fetches) == 1
+        assert first is None
+        assert second is None
+        assert store.light(FAN).brightness == 80  # unchanged
+
+    asyncio.run(scenario())
+
+
+def test_a_read_back_that_raises_is_not_remembered(monkeypatch):
+    """Decision 20: a transient failure costs the pair at most one retry."""
+
+    async def scenario():
+        answers = iter(
+            [
+                RuntimeError("boom"),
+                LightState(is_on=True, brightness=42, sleep=False),
+            ]
+        )
+
+        async def fetch():
+            answer = next(answers)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        store = make_store()
+
+        with pytest.raises(RuntimeError):
+            await store.read_light_back(FAN, fetch)
+
+        # The other listener still gets its own attempt, and it succeeds.
+        second = await store.read_light_back(FAN, fetch)
+
+        assert second.brightness == 42
+        assert store.light(FAN).brightness == 42
+
+    asyncio.run(scenario())
+
+
+def test_forget_light_read_clears_a_remembered_none():
+    async def scenario():
+        store = make_store()
+        answers = iter([None, LightState(is_on=True, brightness=33, sleep=False)])
+
+        async def fetch():
+            return next(answers)
+
+        first = await store.read_light_back(FAN, fetch)
+        store.forget_light_read(FAN)
+        second = await store.read_light_back(FAN, fetch)
+
+        assert first is None
+        assert second.brightness == 33
+        assert store.light(FAN).brightness == 33
+
+    asyncio.run(scenario())
