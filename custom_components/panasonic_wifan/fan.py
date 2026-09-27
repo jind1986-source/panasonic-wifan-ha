@@ -28,11 +28,12 @@ _LOGGER = logging.getLogger(__name__)
 
 SCAN_INTERVAL = timedelta(minutes=5)
 
-# The fan's read-back runs sooner than the light's: it lands inside SETTLE
-# (5 s), but it is the deliberate, authoritative read the wait promises
-# rather than an incidental poll, so it is applied regardless (see
-# _read_back). Kept as its own constant because the light and switch have
-# their own reasons to wait the full 8 s (see light.py, switch.py).
+# Read back this long after a command sends, once the wait's merged state
+# has had a moment to reach the device. It lands inside SETTLE (5 s), but it
+# is the deliberate, authoritative read the wait promises rather than an
+# incidental poll, so it is applied regardless (see _read_back). The light
+# and switch use the same delay and reason (see light.py, switch.py); kept
+# as its own constant per module, per the repo's convention.
 REFRESH_AFTER_COMMAND = 2  # seconds
 
 
