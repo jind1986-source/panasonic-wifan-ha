@@ -327,6 +327,79 @@ def test_a_change_after_the_wait_settles_gets_its_own_command(monkeypatch):
     asyncio.run(scenario())
 
 
+def test_a_change_while_the_send_is_in_flight_does_not_abort_it(monkeypatch):
+    """decision 19, at the entity level.
+
+    A brightness change made while the previous one is still being sent must
+    not abort that write, and must not have its own read-back clobbered by
+    the superseded cycle's — the store still holds what this fresh change
+    set, not the stale value the first send captured before it went out
+    (see PanasonicWiFiLight._send_command's record_command guard).
+    """
+
+    async def scenario():
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        class SlowFirstSend:
+            def __init__(self):
+                self.sent = []
+                self.get_state_calls = []
+                self._first = True
+                self.reported = types_.DeviceState(
+                    fan=types_.FanState(
+                        is_on=True, speed=3, reverse=False, yuragi=False
+                    ),
+                    light=LightState(is_on=True, brightness=70, color_temp=10),
+                )
+
+            async def set_light_state(self, fan, state):
+                if self._first:
+                    self._first = False
+                    started.set()
+                    await release.wait()  # genuinely in flight
+                self.sent.append(state)
+
+            async def get_state_for_fan(self, fan, *, max_age=None):
+                self.get_state_calls.append(max_age)
+                return self.reported
+
+        api = SlowFirstSend()
+        entity, api, debounce = make_entity(
+            LightState(is_on=False, brightness=50, color_temp=10),
+            monkeypatch=monkeypatch,
+            delay=0.01,
+            after=0.001,
+            api=api,
+        )
+
+        await entity.async_turn_on(brightness=light.to_ha_brightness(40))
+        first_task = debounce.current_task(entity._key)
+
+        await started.wait()  # the first send is under way
+
+        await entity.async_turn_on(brightness=light.to_ha_brightness(90))
+        second_task = debounce.current_task(entity._key)
+
+        release.set()  # let the first send run to completion
+        await first_task
+        await second_task
+
+        assert len(api.sent) == 2
+        assert api.sent[0].brightness == light.to_device_brightness(
+            light.to_ha_brightness(40)
+        )
+        assert api.sent[1].brightness == light.to_device_brightness(
+            light.to_ha_brightness(90)
+        )
+        # Only the second (current) cycle read back — the first cycle's
+        # read-back was skipped once it was superseded.
+        assert api.get_state_calls == [0]
+        assert entity.brightness == light.to_ha_brightness(70)
+
+    asyncio.run(scenario())
+
+
 def test_a_poll_during_the_wait_does_not_revert_the_state(monkeypatch):
     async def scenario():
         stale = types_.DeviceState(

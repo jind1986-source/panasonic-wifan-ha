@@ -328,7 +328,13 @@ class PanasonicWiFiLight(LightEntity):  # type: ignore[misc]
             _LOGGER.error("Error sending light state for %s: %s", self._fan.name, err)
             return
 
-        self._store.record_command(self._fan, state)
+        # A same-key change made while this send was in flight already wrote
+        # its own, newer state into the store (debounce.CommandDebouncer lets
+        # the send finish rather than aborting it). Recording what was just
+        # sent would clobber that newer state with what is now stale, so it
+        # is only recorded while it still matches what the store is holding.
+        if self._store.light(self._fan) == state:
+            self._store.record_command(self._fan, state)
 
     async def _read_back(self) -> None:
         """Refresh from the light's read-back, shared with the sleep switch.
